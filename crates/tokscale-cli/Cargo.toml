@@ -20,6 +20,11 @@ path = "src/main.rs"
 # for the `apple-fm` report summarizer backend. macOS-only; no-op elsewhere.
 # NOT enabled by default — the default build degrades to a Rust heuristic.
 apple-fm = []
+# Optional: `tracing-subscriber` init behind the TUI `--debug` flag. Off by
+# default so release builds don't link the subscriber or its exclusive
+# transitive deps (nu-ansi-term, sharded-slab, matchers, tracing-log,
+# thread_local). With it off, `--debug` is accepted but is a no-op.
+debug-logs = ["dep:tracing-subscriber"]
 
 [dependencies]
 tokscale-core = { workspace = true }
@@ -33,7 +38,7 @@ comfy-table = { workspace = true }
 colored = { workspace = true }
 indicatif = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

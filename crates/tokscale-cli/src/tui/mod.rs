@@ -87,9 +87,12 @@ pub fn run(
     worktree_rollup: tokscale_core::WorktreeRollup,
 ) -> Result<()> {
     if debug {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter("debug")
-            .try_init();
+        #[cfg(feature = "debug-logs")]
+        {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter("debug")
+                .try_init();
+        }
     }
 
     let config = TuiConfig {
