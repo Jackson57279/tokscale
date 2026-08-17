@@ -63,14 +63,14 @@ jobs:
             package_dir: cli-linux-x64-gnu
             artifact_name: cli-binary-x86_64-unknown-linux-gnu
             build: cargo zigbuild --release -p tokscale-cli --target x86_64-unknown-linux-gnu
-            strip: strip target/x86_64-unknown-linux-gnu/release/tokscale
+            strip: strip --remove-section=.eh_frame --remove-section=.eh_frame_hdr target/x86_64-unknown-linux-gnu/release/tokscale
             bin_name: tokscale
           - host: ubuntu-latest
             target: x86_64-unknown-linux-musl
             package_dir: cli-linux-x64-musl
             artifact_name: cli-binary-x86_64-unknown-linux-musl
             build: cargo zigbuild --release -p tokscale-cli --target x86_64-unknown-linux-musl
-            strip: strip target/x86_64-unknown-linux-musl/release/tokscale
+            strip: strip --remove-section=.eh_frame --remove-section=.eh_frame_hdr target/x86_64-unknown-linux-musl/release/tokscale
             bin_name: tokscale
           - host: ubuntu-latest
             target: aarch64-unknown-linux-gnu
