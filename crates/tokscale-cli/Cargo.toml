@@ -42,8 +42,8 @@ dirs = { workspace = true }
 rayon = { workspace = true }
 reqwest = { workspace = true }
 fs2 = { workspace = true }
-image = "0.25"
-imageproc = "0.25"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "rayon"] }
+imageproc = { version = "0.25", default-features = false, features = ["rayon"] }
 ab_glyph = "0.2"
 resvg = "0.43"
 usvg = "0.43"
