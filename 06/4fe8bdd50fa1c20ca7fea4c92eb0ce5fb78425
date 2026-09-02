@@ -1,0 +1,48 @@
+packages/frontend/src/lib/db/parserHighWater.ts
+  s_66923915f741bb::t_5286fdbc412f33 792-800
+  s_66923915f741bb::t_b92fa5b36638a9 44-50
+  s_66923915f741bb::t_4437ee5fc54495 342-367,369-370,373-379,386-387
+  s_66923915f741bb::t_388cbf0a48ba6c 368,371-372,380-385
+  s_66923915f741bb::t_b4ec2166fe6026 120-127
+  s_66923915f741bb::t_0b423cef114502 713,733,764
+  s_66923915f741bb::t_c0760d79abdfb3 730-732,734-740
+  s_66923915f741bb::t_7fe091434f8f17 21-23
+packages/frontend/src/lib/publicProfileData.ts
+  s_66923915f741bb::t_cbf22696123864 652,654,656,658,660
+  s_66923915f741bb::t_d93ffffd0cd9ba 619-622
+packages/frontend/src/lib/utils.ts
+  s_66923915f741bb::t_75bf87af0a9e05 294
+  s_66923915f741bb::t_b03ec93a9ee0e0 319
+  s_66923915f741bb::t_78b42c391d92d2 199
+  s_66923915f741bb::t_cea615bdbd1b89 200-202,207-209
+  s_66923915f741bb::t_ceb5b3c99c62f4 346-351
+packages/frontend/__tests__/lib/parserHighWater.test.ts
+  s_66923915f741bb::t_2cae874bf17e90 1487,1491-1495,1510-1511
+packages/frontend/src/app/api/submit/route.ts
+  s_66923915f741bb::t_307825ea722c27 794-795
+  s_66923915f741bb::t_e66e91e983d88a 982-986
+  s_66923915f741bb::t_f886d260da8546 1012-1016
+  s_66923915f741bb::t_fcc9c9c1ce1e6a 802-826
+  s_66923915f741bb::t_394c2faadbf0ff 878-884,906-910
+  s_66923915f741bb::t_32dce8380e020d 856
+  s_66923915f741bb::t_1600ee23052b3c 66-94
+packages/frontend/src/components/StatsPanel.tsx
+  s_66923915f741bb::t_574d2e14547fba 11
+  s_66923915f741bb::t_3514c003341422 178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "064fe8bdd50fa1c20ca7fea4c92eb0ce5fb78425",
+  "prompts": {},
+  "sessions": {
+    "s_66923915f741bb": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "d405aaad-f7c9-41f0-b504-004775cdec80",
+        "model": "grok-4.6"
+      },
+      "human_author": "Jackson57279 <otdoges@proton.me>"
+    }
+  }
+}
