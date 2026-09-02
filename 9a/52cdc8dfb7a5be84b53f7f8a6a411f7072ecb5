@@ -1,0 +1,59 @@
+packages/frontend/src/lib/db/parserHighWater.ts
+  s_66923915f741bb::t_874a397d56a9da 785,787
+  s_66923915f741bb::t_6ce27d1291e094 725
+  s_66923915f741bb::t_f5c9f9bdadf710 115-116,121
+  s_66923915f741bb::t_b039e0c04a4c08 361,375
+packages/frontend/__tests__/api/submitAntigravityCliHighWater.test.ts
+  s_d5c6864ed0d3c7::t_e7ebac0b8f6d79 680-717
+packages/frontend/src/lib/db/helpers.ts
+  s_d5c6864ed0d3c7::t_f3095565734d56 303
+packages/frontend/src/lib/utils.ts
+  s_d5c6864ed0d3c7::t_15cae924d28d92 347-348,350
+  s_66923915f741bb::t_f025cc0dd1aaac 190
+packages/frontend/__tests__/lib/graphClientFilter.test.ts
+  s_d5c6864ed0d3c7::t_beb9c5dcfe21d0 8
+  s_d5c6864ed0d3c7::t_241f9514e18794 154-181
+packages/frontend/__tests__/lib/helpers.test.ts
+  s_d5c6864ed0d3c7::t_c41bf29272f59c 2-5
+  s_d5c6864ed0d3c7::t_8b96582a831c5b 210-224
+packages/frontend/__tests__/lib/parserHighWater.test.ts
+  s_66923915f741bb::t_36cbf1668a8b3c 1490
+  s_66923915f741bb::t_b9debfbd8a9736 1509
+packages/frontend/src/lib/publicProfileData.ts
+  s_66923915f741bb::t_0821ab5a9fd598 652
+  s_66923915f741bb::t_f7006cbb2f4b7f 13
+packages/frontend/src/app/api/submit/route.ts
+  s_d5c6864ed0d3c7::t_b87f40521d270c 20
+  s_d5c6864ed0d3c7::t_8b01624d6a04ce 1005-1006
+  s_66923915f741bb::t_e82b77be0ad9b7 907,924-927,932
+  s_d5c6864ed0d3c7::t_08dcf8b6c7f5b2 1036-1037
+  s_66923915f741bb::t_3a297200fda070 830-833,842,852-856
+  s_d5c6864ed0d3c7::t_7bf25d5ad59da0 90-91,96-104
+  s_66923915f741bb::t_7ab197cd4f6697 1002
+  s_66923915f741bb::t_71abf625b2bd31 83-87,94,105-135
+  s_66923915f741bb::t_214b2ffc7f60d2 1033
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9a52cdc8dfb7a5be84b53f7f8a6a411f7072ecb5",
+  "prompts": {},
+  "sessions": {
+    "s_66923915f741bb": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "d405aaad-f7c9-41f0-b504-004775cdec80",
+        "model": "grok-4.6"
+      },
+      "human_author": "Jackson57279 <otdoges@proton.me>"
+    },
+    "s_d5c6864ed0d3c7": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "cd880adc-a0f3-4d07-bb16-256b52a76aae",
+        "model": "grok-4.6"
+      },
+      "human_author": "Jackson57279 <otdoges@proton.me>"
+    }
+  }
+}
