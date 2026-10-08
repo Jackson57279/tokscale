@@ -321,8 +321,6 @@ function isDailyBreakdownInsert(text: string): boolean {
 }
 
 function installTx(store: Store) {
-  const executedSqlArgs: unknown[] = [];
-
   function applyDailyBreakdownWrite(sqlArg: unknown): void {
     const strings: string[] = [];
     collectStrings(sqlArg, strings);
@@ -417,7 +415,6 @@ function installTx(store: Store) {
       return builder;
     }),
     execute: vi.fn((sqlArg: unknown) => {
-      executedSqlArgs.push(sqlArg);
       applyDailyBreakdownWrite(sqlArg);
       return Promise.resolve();
     }),
@@ -429,7 +426,6 @@ function installTx(store: Store) {
     async (callback: (transaction: typeof tx) => Promise<unknown>) =>
       callback(tx),
   );
-  return { executedSqlArgs };
 }
 
 function submissionBody(
@@ -670,8 +666,9 @@ describe("POST /api/submit devin-cli recount", () => {
 
     expect(response.status).toBe(200);
     // Tokens are recounted down; the incomplete snapshot may not lower the
-    // credited lifetime cost, so covered cells absorb the $50 deficit while
-    // the preserved day's $10 is counted exactly once.
+    // credited lifetime cost, so the covered cells' $13 is topped up with the
+    // $37 deficit to reach their $50 share of the floor, while the preserved
+    // day's $10 is counted exactly once.
     expect(storedTokens(store)).toBe(1_000 + 900 + 1_200);
     expect(storedCost(store)).toBeCloseTo(60, 4);
     for (const date of ["2026-10-07", "2026-10-08"]) {
