@@ -1442,6 +1442,29 @@ describe("POST /api/submit droid snapshot layout", () => {
     expect(store.days).toEqual(beforePartial);
   });
 
+  it("warns that a date-filtered submit cannot credit cumulative usage", async () => {
+    const store = newStore();
+    await submitSnapshot(store, originalSnapshot());
+    const partial = snapshotBody([{
+      date: "2026-08-09", costIsComplete: true,
+      models: [{ modelId: "gemini-3-pro", tokens: 200_000, cost: 20, messages: 5 }],
+    }]);
+    partial.scanScope.fullHistory = false;
+    const json = await submitSnapshot(store, partial);
+    // The frozen total is quantified so the CLI can reconcile the scanned
+    // "Total tokens" figure against what actually reached the profile.
+    expect(json.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Ignored Droid changes (200,000 tokens)"),
+      ])
+    );
+    expect(
+      json.warnings.some((warning: string) =>
+        warning.includes("full-history submit")
+      ),
+    ).toBe(true);
+  });
+
   it("replaces stored Droid days when a full snapshot re-dates the same lifetime", async () => {
     const { store, firstJson, secondJson } = await submitOldThenNew("droid");
 

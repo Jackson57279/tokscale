@@ -565,6 +565,8 @@ tokscale submit --dry-run
 tokscale logout
 ```
 
+> **참고:** 로컬 데이터가 누적 카운터를 보고하는 클라이언트 — Droid, Copilot, Antigravity, MiMo Code — 는 전체 기록 제출에서만 반영됩니다. 날짜 필터가 있는 제출(`--week`, `--since`, `autosubmit enable --week` 등)은 프로필에서 해당 클라이언트의 몫을 갱신할 수 없습니다. 반영하려면 날짜 필터 없이 `tokscale submit`을 실행하세요.
+
 <img alt="CLI Submit" src="./.github/assets/cli-submit.png" />
 
 #### 가격이 책정되지 않은 사용량은 제출에서 제외됩니다

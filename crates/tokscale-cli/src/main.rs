@@ -5018,6 +5018,45 @@ fn to_ts_token_contribution_data(
     }
 }
 
+/// Clients whose server-side accounting is bounded by a cumulative high-water
+/// mark. Their local data reports whole-history counters that are
+/// re-attributed between scans (Droid anchors a session's lifetime
+/// `tokenUsage` at the file's mtime, so the same tokens move day to day), so
+/// a date-filtered snapshot cannot prove coverage and the server freezes
+/// their cells instead of crediting them. Mirrors `SUPPORTED_VERSIONED_PARSERS`
+/// plus the MiCode and Antigravity families in
+/// `packages/frontend/src/lib/db/parserHighWater.ts` and the sibling
+/// transition planners — keep in sync.
+const HIGH_WATER_CLIENT_IDS: &[&str] = &[
+    "antigravity",
+    "antigravity-cli",
+    "antigravity-extension",
+    "copilot",
+    "droid",
+    "micode",
+    "micode-desktop",
+];
+
+/// Scanned tokens per client for the clients the server credits only on
+/// full-history submits. Lets a date-filtered submit say how much of its
+/// "Total tokens" cannot land on the profile.
+fn high_water_scan_tokens(graph: &tokscale_core::GraphResult) -> Vec<(String, i64)> {
+    let mut totals: std::collections::BTreeMap<&str, i64> = std::collections::BTreeMap::new();
+    for day in &graph.contributions {
+        for client in &day.clients {
+            if HIGH_WATER_CLIENT_IDS.contains(&client.client.as_str()) {
+                let total = totals.entry(client.client.as_str()).or_insert(0);
+                *total = total.saturating_add(client_token_total(&client.tokens));
+            }
+        }
+    }
+    totals
+        .into_iter()
+        .filter(|(_, tokens)| *tokens > 0)
+        .map(|(id, tokens)| (id.to_string(), tokens))
+        .collect()
+}
+
 /// Parser identity is declared for every scanned client, even for a partial
 /// date range. `full_history` is a separate capability bit: only an unbounded
 /// scan can establish or advance a cumulative rollout high-water.
@@ -6554,6 +6593,33 @@ fn run_submit_command(
         "{}",
         format!("    Models: {} models", graph_result.summary.models.len()).bright_black()
     );
+
+    // A date-filtered scan cannot advance the server-side cumulative
+    // high-water marks, so those clients' share of the total above never
+    // reaches the profile from this submit. Say so up front — otherwise the
+    // scanned total reads as what the profile is about to show.
+    if !full_history_scan {
+        let deferred = high_water_scan_tokens(&graph_result);
+        if !deferred.is_empty() {
+            let tokens = deferred
+                .iter()
+                .fold(0i64, |acc, (_, t)| acc.saturating_add(*t));
+            let names = deferred
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!(
+                "{}",
+                format!(
+                    "    Note: {} of the tokens above belong to {} — cumulative-usage\n          clients the server credits only on full-history submits. This\n          filtered submit won't add them to your profile; run\n          `tokscale submit` without a date flag to update them.",
+                    format_tokens_with_commas(tokens),
+                    names
+                )
+                .yellow()
+            );
+        }
+    }
     println!();
 
     if graph_result.summary.total_tokens == 0 {
@@ -9409,6 +9475,44 @@ mod tests {
         let scope = submit_scan_scope(Some(&clients), true).expect("droid scope");
 
         assert_eq!(scope.parser_versions.get("droid"), Some(&1));
+    }
+
+    #[test]
+    fn high_water_scan_tokens_reports_only_cumulative_clients() {
+        let graph = graph_result_with_contributions(vec![
+            day_with_clients(
+                "2026-10-06",
+                700,
+                vec![
+                    client_contribution("droid", "kimi-k3", "factory", 500, 0.0, 2),
+                    client_contribution("cursor", "auto", "cursor", 200, 0.0, 3),
+                ],
+            ),
+            day_with_clients(
+                "2026-10-07",
+                400,
+                vec![
+                    client_contribution("copilot", "gpt-5", "openai", 100, 0.0, 1),
+                    client_contribution("droid", "kimi-k3", "factory", 300, 0.0, 1),
+                ],
+            ),
+        ]);
+
+        assert_eq!(
+            high_water_scan_tokens(&graph),
+            vec![("copilot".to_string(), 100), ("droid".to_string(), 800)]
+        );
+    }
+
+    #[test]
+    fn high_water_scan_tokens_is_empty_without_cumulative_clients() {
+        let graph = graph_result_with_contributions(vec![day_with_clients(
+            "2026-10-07",
+            200,
+            vec![client_contribution("cursor", "auto", "cursor", 200, 0.0, 3)],
+        )]);
+
+        assert!(high_water_scan_tokens(&graph).is_empty());
     }
 
     /// The tip is advice for a person at a prompt. Autosubmit's stdout is the

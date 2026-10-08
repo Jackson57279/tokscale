@@ -565,6 +565,8 @@ tokscale submit --dry-run
 tokscale logout
 ```
 
+> **注意：** 本地数据上报累计计数器的客户端（Droid、Copilot、Antigravity、MiMo Code）只能通过全量历史提交计入。带日期过滤的提交（`--week`、`--since`、`autosubmit enable --week` 等）无法更新它们在您主页上的份额；请运行不带日期过滤参数的 `tokscale submit` 进行计入。
+
 <img alt="CLI Submit" src="./.github/assets/cli-submit.png" />
 
 #### 未定价的用量不会提交
