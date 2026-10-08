@@ -569,6 +569,8 @@ tokscale submit --dry-run
 tokscale logout
 ```
 
+> **注:** ローカルデータが累積カウンタを報告するクライアント（Droid、Copilot、Antigravity、MiMo Code）は、履歴全体の送信でのみ加算されます。日付フィルター付きの送信（`--week`、`--since`、`autosubmit enable --week` など）ではプロフィール上のそれらの分は更新されません。更新するには日付フィルターなしで `tokscale submit` を実行してください。
+
 <img alt="CLI Submit" src="./.github/assets/cli-submit.png" />
 
 #### 価格未設定の使用量は送信から除外されます

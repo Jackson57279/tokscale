@@ -836,6 +836,7 @@ export async function POST(request: Request) {
             return stored ? [[day.date, stored] as const] : [];
           })
         );
+        const incomingDays = foldParserClientSnapshot(data.contributions, client);
         const plan = planParserHighWaterSubmission({
           client,
           incomingVersion: isBackfill
@@ -856,7 +857,7 @@ export async function POST(request: Request) {
                 client
               ),
           existingLegacyDays: existingClientDays,
-          incomingDays: foldParserClientSnapshot(data.contributions, client),
+          incomingDays,
           state: ownValue(deviceParserStates, client),
           persistedVersion: ownValue(
             submittedDevice.parserVersions as Record<string, number> | undefined,
@@ -875,9 +876,35 @@ export async function POST(request: Request) {
             `Rewrote ${label} daily layout from the full parser snapshot without changing the lifetime high-water.`
           );
         } else if (plan.mode === "freeze") {
-          warnings.push(
-            `Ignored ${label} changes because this parser generation or partial snapshot cannot safely advance the device high-water.`
+          const deferredTokens = Object.values(incomingDays).reduce(
+            (sum, day) => sum + day.tokens,
+            0
           );
+          if (data.scanScope?.fullHistory === true) {
+            warnings.push(
+              `Ignored ${label} changes (${deferredTokens.toLocaleString(
+                "en-US"
+              )} tokens) because the parser generation or stored device state cannot safely advance the device high-water.`
+            );
+          } else if (Object.keys(incomingDays).length > 0) {
+            // Warn only when the submission actually carried cells for the
+            // client: parserVersions declares every scanned client, so a
+            // client with no local data would otherwise produce a "0 tokens"
+            // warning on every date-filtered submit.
+            if (isBackfill) {
+              warnings.push(
+                `Ignored ${label} changes (${deferredTokens.toLocaleString(
+                  "en-US"
+                )} tokens): imported data cannot advance cumulative-usage accounting for ${label}; only a full-history submit from the device credits local ${label} usage.`
+              );
+            } else {
+              warnings.push(
+                `Ignored ${label} changes (${deferredTokens.toLocaleString(
+                  "en-US"
+                )} tokens): ${label} reports cumulative usage that only a declared full-history submit can safely credit. Run \`tokscale submit\` without a date filter (on an up-to-date CLI) to update it on your profile.`
+              );
+            }
+          }
         }
         if (plan.highWaterDeficit) {
           // This deficit bounds tokens only. Message growth has an independent

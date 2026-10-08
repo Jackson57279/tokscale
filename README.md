@@ -567,6 +567,8 @@ tokscale submit --dry-run
 tokscale logout
 ```
 
+> **Note:** Clients whose local data reports cumulative counters — Droid, Copilot, Antigravity, MiMo Code — are only credited by full-history submits. A date-filtered submit (`--week`, `--since`, `autosubmit enable --week`, …) cannot update their share of your profile; run `tokscale submit` without a date filter to credit them.
+
 <img alt="CLI Submit" src="./.github/assets/cli-submit.png" />
 
 #### Unpriced usage is excluded from submission
