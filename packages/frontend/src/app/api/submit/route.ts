@@ -93,6 +93,16 @@ function isReplacePlan(plan: ParserHighWaterPlan): boolean {
 }
 
 /**
+ * Plans carrying an authoritative layout for the client's covered days:
+ * `replace` rewrites the client's whole stored layout (deleting cells the
+ * snapshot does not report), while `recount` rewrites only the days the
+ * snapshot reports and keeps stored cells elsewhere.
+ */
+function isLayoutPlan(plan: ParserHighWaterPlan): boolean {
+  return plan.mode === "replace" || plan.mode === "recount";
+}
+
+/**
  * The family's credited lifetime cost across stored days, read from DB rows
  * (never incoming or legacy-ledger estimates) before any rewrite can delete
  * the source that carries it. Feeds `reapplyReplaceFamilyCostFloor`.
@@ -121,7 +131,7 @@ function applyReplaceLayouts(
   incomingCostIsComplete: boolean
 ): void {
   for (const [client, plan] of parserPlans) {
-    if (!isReplacePlan(plan) || !plan.layoutDays) continue;
+    if (!isLayoutPlan(plan) || !plan.layoutDays) continue;
     const next = ownValue(plan.layoutDays, date);
     if (next) {
       // A replacement is the authoritative token/model layout. Old same-day
@@ -133,9 +143,12 @@ function applyReplaceLayouts(
         undefined,
         incomingCostIsComplete
       );
-    } else {
+    } else if (isReplacePlan(plan)) {
       delete merged[client];
     }
+    // A recount keeps the stored cell on days its snapshot does not report:
+    // the parser cannot distinguish pruned local history from usage that
+    // never existed, so the never-lose-data stance preserves it.
   }
 }
 
@@ -874,6 +887,10 @@ export async function POST(request: Request) {
           warnings.push(
             `Rewrote ${label} daily layout from the full parser snapshot without changing the lifetime high-water.`
           );
+        } else if (plan.mode === "recount") {
+          warnings.push(
+            `Recounted ${label} history with parser generation ${supportedVersion}; covered stored cells were rewritten to the corrected lower counts while uncovered stored cells were preserved.`
+          );
         } else if (plan.mode === "freeze") {
           warnings.push(
             `Ignored ${label} changes because this parser generation or partial snapshot cannot safely advance the device high-water.`
@@ -1036,7 +1053,7 @@ export async function POST(request: Request) {
         }
 
         for (const [client, plan] of parserPlans) {
-          if (plan.mode === "freeze" || plan.mode === "replace") {
+          if (plan.mode === "freeze" || isLayoutPlan(plan)) {
             delete incomingClientBreakdown[client];
           } else if (
             plan.mode === "incremental" ||
@@ -1058,7 +1075,7 @@ export async function POST(request: Request) {
         // disappear -- merging them would preserve them with a false warning.
         if (layoutOnlyDates.has(incomingDay.date)) clientsToMerge.clear();
         for (const [client, plan] of parserPlans) {
-          if (plan.mode === "replace") {
+          if (isLayoutPlan(plan)) {
             clientsToMerge.delete(client);
             continue;
           }
