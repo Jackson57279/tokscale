@@ -9420,10 +9420,12 @@ mod tests {
 
     /// Devin CLI generation 2 deduplicates `message_nodes` rows by request_id,
     /// which lowers the counted total — a recount, not a re-attribution. The
-    /// server registers it as a recounting generation in
-    /// `SUPPORTED_VERSIONED_PARSERS`; a full-history snapshot then replaces
-    /// stored cells outright. Generation 1 (pre-request_id dedup) freezes, so
-    /// only a CLI declaring this version can heal the inflated rows.
+    /// server accepts the generation via `SUPPORTED_VERSIONED_PARSERS` and the
+    /// actual one-time rewrite behavior comes from `RECOUNTING_GENERATION_CLIENTS`
+    /// (both in packages/frontend/src/lib/db/parserHighWater.ts); a full-history
+    /// snapshot then replaces stored cells outright. Generation 1
+    /// (pre-request_id dedup) freezes, so only a CLI declaring this version can
+    /// heal the inflated rows.
     #[test]
     fn submit_scan_scope_declares_the_devin_cli_generation_the_server_registers() {
         let clients = vec!["devin-cli".to_string()];

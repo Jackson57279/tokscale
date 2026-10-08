@@ -955,8 +955,11 @@ export async function POST(request: Request) {
         ([, plan]) =>
           plan.mode === "incremental" || plan.mode === "baseline-legacy"
       );
-      const replaceClients = [...parserPlans]
-        .filter(([, plan]) => isReplacePlan(plan))
+      // Layout clients (replace AND recount) rewrite their covered cells, so
+      // each participates in the lifetime cost floor: an incomplete snapshot
+      // may not lower the client's credited lifetime cost.
+      const layoutClients = [...parserPlans]
+        .filter(([, plan]) => isLayoutPlan(plan))
         .map(([client]) => client);
       // The Antigravity family replaces as one atomic unit, so its credited
       // lifetime cost is one number, captured from the stored rows BEFORE the
@@ -968,7 +971,7 @@ export async function POST(request: Request) {
       const antigravityFamilyFloor = antigravityReplacing
         ? quantizeFamilyFloor(existingDeviceDays, ANTIGRAVITY_FAMILY)
         : 0;
-      const individuallyFlooredClients = replaceClients.filter(
+      const individuallyFlooredClients = layoutClients.filter(
         (client) =>
           !(
             antigravityReplacing &&
@@ -979,7 +982,7 @@ export async function POST(request: Request) {
         existingDeviceDays,
         individuallyFlooredClients
       );
-      const incompleteReplaceClients = new Set<string>();
+      const incompleteLayoutClients = new Set<string>();
 
       const existingDaysMap = new Map(
         existingDeviceDays.map((d) => [d.date, d])
@@ -993,6 +996,36 @@ export async function POST(request: Request) {
         parserPlans,
         existingDeviceDays
       );
+
+      // A recount keeps stored cells on days its snapshot does not cover, and
+      // those rows never reach mergedRows — but their cost is part of the
+      // client's stored lifetime floor. Reapplication compares the floor
+      // against written rows only, so subtract the preserved lifetime or the
+      // kept days' cost would be credited a second time on covered cells.
+      const recountClients = [...parserPlans]
+        .filter(([, plan]) => plan.mode === "recount")
+        .map(([client]) => client);
+      if (recountClients.length > 0) {
+        const processedDates = new Set(daysToProcess.keys());
+        for (const client of recountClients) {
+          const floor = replaceCostFloors.get(client);
+          if (floor == null) continue;
+          let preserved = 0;
+          for (const day of existingDeviceDays) {
+            if (processedDates.has(day.date)) continue;
+            const breakdown = day.sourceBreakdown as Record<
+              string,
+              ClientBreakdownData
+            > | null;
+            preserved += ownValue(breakdown ?? {}, client)?.cost ?? 0;
+          }
+          if (floor - preserved > 0) {
+            replaceCostFloors.set(client, floor - preserved);
+          } else {
+            replaceCostFloors.delete(client);
+          }
+        }
+      }
 
       // ------------------------------------------
       // STEP 3c: Compute merge results in memory, then batch write
@@ -1028,9 +1061,9 @@ export async function POST(request: Request) {
 
       for (const incomingDay of daysToProcess.values()) {
         if (incomingDay.totals?.costIsComplete === false) {
-          for (const client of replaceClients) {
+          for (const client of layoutClients) {
             if (ownValue(parserPlans.get(client)?.layoutDays ?? {}, incomingDay.date)) {
-              incompleteReplaceClients.add(client);
+              incompleteLayoutClients.add(client);
             }
           }
         }
@@ -1223,7 +1256,7 @@ export async function POST(request: Request) {
       reapplyReplaceLayoutCostFloors(
         mergedRows,
         replaceCostFloors,
-        incompleteReplaceClients
+        incompleteLayoutClients
       );
       if (antigravityReplacing && antigravityFamilyFloor > 0) {
         reapplyReplaceFamilyCostFloor(
