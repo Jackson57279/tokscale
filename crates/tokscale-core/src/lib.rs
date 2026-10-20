@@ -700,6 +700,25 @@ pub struct UnpricedSubmissionUsage {
     pub reason: &'static str,
 }
 
+/// Submission clients the receiver only admits from a complete snapshot:
+/// the versioned-parser high-water set (`SUPPORTED_VERSIONED_PARSERS` on the
+/// receiver) plus the atomic MiMo and Antigravity source families. A
+/// date-filtered submission cannot shrink their coverage without freezing
+/// their stored history — a partial window for one of these is not
+/// submittable at all — so the submission graph keeps their messages
+/// regardless of `since`/`until`/`year`, and the scan scope names them in
+/// `fullHistoryClients`.
+pub const FULL_HISTORY_SUBMIT_CLIENTS: &[&str] = &[
+    "amp",
+    "antigravity",
+    "antigravity-cli",
+    "antigravity-extension",
+    "copilot",
+    "droid",
+    "micode",
+    "micode-desktop",
+];
+
 #[derive(Debug, Clone, Default)]
 pub struct ReportOptions {
     pub home_dir: Option<String>,
@@ -715,6 +734,11 @@ pub struct ReportOptions {
     /// Persistent scanner config loaded from `~/.config/tokscale/settings.json`.
     /// Defaults to empty when callers don't care about user-configured paths.
     pub scanner_settings: scanner::ScannerSettings,
+    /// Clients exempt from `since`/`until`/`year`: the receiver admits them
+    /// only from a complete snapshot, so filtering them out of a date-bounded
+    /// submission discards their usage instead of scoping it. Set by the
+    /// submission path only — local reports always leave it empty.
+    pub date_filter_exempt_clients: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -5678,7 +5702,13 @@ impl MessageSink for GraphSink<'_> {
             return;
         }
         if let Some(options) = self.filter {
-            if !message_passes_report_filter(&message, options) {
+            // Exempt clients carry full-history authority: the scan already
+            // read their complete sources, and a partial window for them
+            // freezes rather than scopes. See FULL_HISTORY_SUBMIT_CLIENTS.
+            let exempt = options
+                .date_filter_exempt_clients
+                .contains(message.client.as_str());
+            if !exempt && !message_passes_report_filter(&message, options) {
                 return;
             }
         }
@@ -9162,6 +9192,62 @@ mod tests {
         assert_eq!(monthly_reasoning, 18);
         assert_eq!(monthly_reasoning, model_reasoning);
         assert_eq!(monthly_reasoning, hourly_reasoning);
+    }
+
+    #[test]
+    fn submission_sink_keeps_exempt_clients_outside_the_date_window() {
+        let message = |client: &str, date: &str| {
+            let mut msg = UnifiedMessage::new(
+                client,
+                "model",
+                "provider",
+                format!("{client}-{date}"),
+                1_767_225_600_000,
+                TokenBreakdown {
+                    input: 10,
+                    output: 5,
+                    ..TokenBreakdown::default()
+                },
+                0.0,
+            );
+            msg.date = date.to_string();
+            msg
+        };
+        let tz = crate::BucketTimezone::default();
+        let mut options = ReportOptions {
+            since: Some("2026-02-01".to_string()),
+            until: Some("2026-02-28".to_string()),
+            ..ReportOptions::default()
+        };
+        options
+            .date_filter_exempt_clients
+            .insert("droid".to_string());
+
+        let mut sink = GraphSink::new(Some(&options), None, GraphPricingRequirement::Lenient);
+        for message in [
+            message("droid", "2025-12-01"),
+            message("droid", "2026-02-10"),
+            message("codex", "2025-12-01"),
+            message("codex", "2026-02-10"),
+        ] {
+            sink.accept(message);
+        }
+        let result = sink.finish(std::time::Instant::now(), &tz).expect("graph");
+
+        let droid_days: Vec<&str> = result
+            .contributions
+            .iter()
+            .filter(|day| day.clients.iter().any(|c| c.client == "droid"))
+            .map(|day| day.date.as_str())
+            .collect();
+        assert_eq!(droid_days, vec!["2025-12-01", "2026-02-10"]);
+        let codex_days: Vec<&str> = result
+            .contributions
+            .iter()
+            .filter(|day| day.clients.iter().any(|c| c.client == "codex"))
+            .map(|day| day.date.as_str())
+            .collect();
+        assert_eq!(codex_days, vec!["2026-02-10"]);
     }
 
     #[test]
@@ -22162,6 +22248,7 @@ mod tests {
                     group_by: GroupBy::default(),
                     worktree_rollup: WorktreeRollup::default(),
                     scanner_settings: scanner::ScannerSettings::default(),
+                    date_filter_exempt_clients: Default::default(),
                 },
                 None,
                 GraphPricingRequirement::Lenient,
