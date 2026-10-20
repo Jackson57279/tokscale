@@ -5348,20 +5348,42 @@ fn to_ts_token_contribution_data(
     }
 }
 
+/// Atomic source families: the receiver advances them only when every member
+/// arrives in the same snapshot (see MICODE_FAMILY/ANTIGRAVITY_FAMILY in
+/// packages/frontend/src/lib/db/parserHighWater.ts).
+const MICODE_FAMILY: &[&str] = &["micode", "micode-desktop"];
+const ANTIGRAVITY_FAMILY: &[&str] = &["antigravity", "antigravity-cli", "antigravity-extension"];
+
 /// Clients a date-filtered submit still ships complete. The receiver freezes
 /// every versioned parser and atomic source family without full-history
 /// authority, so letting `since`/`until`/`year` scope them would discard
 /// their usage outright instead of narrowing it. Amp additionally needs a
 /// complete thread export before any snapshot of it can claim full coverage.
+/// An atomic-family member is exempted only when the whole family was
+/// selected — otherwise the family plan freezes anyway and the exemption
+/// would bypass the requested date bound without advancing anything.
 fn full_history_exempt_clients<'a>(
     clients: &'a [String],
     amp_full_history_safe: bool,
 ) -> impl Iterator<Item = String> + 'a {
+    let family_complete = |client: &str| {
+        let family: &[&str] = if MICODE_FAMILY.contains(&client) {
+            MICODE_FAMILY
+        } else if ANTIGRAVITY_FAMILY.contains(&client) {
+            ANTIGRAVITY_FAMILY
+        } else {
+            return true;
+        };
+        family
+            .iter()
+            .all(|member| clients.iter().any(|c| c.as_str() == *member))
+    };
     clients
         .iter()
         .filter(move |client| {
             tokscale_core::FULL_HISTORY_SUBMIT_CLIENTS.contains(&client.as_str())
                 && (client.as_str() != "amp" || amp_full_history_safe)
+                && family_complete(client.as_str())
         })
         .cloned()
 }
@@ -10184,6 +10206,28 @@ mod tests {
         assert!(complete.full_history_clients.contains(&"amp".to_string()));
     }
 
+    /// Selecting one member of an atomic family on a bounded scan cannot
+    /// satisfy the receiver's all-members completeness contract, so it must
+    /// not be exempted — its messages stay inside the requested date window.
+    /// With every member selected, the family ships complete as a unit.
+    #[test]
+    fn submit_scan_scope_partial_scan_skips_incomplete_atomic_families() {
+        let solo = submit_scan_scope(Some(&["micode".to_string()]), false, true).expect("scope");
+        assert!(solo.full_history_clients.is_empty());
+
+        let solo_ag = submit_scan_scope(
+            Some(&["antigravity-cli".to_string(), "codex".to_string()]),
+            false,
+            true,
+        )
+        .expect("scope");
+        assert!(solo_ag.full_history_clients.is_empty());
+
+        let family = vec!["micode".to_string(), "micode-desktop".to_string()];
+        let together = submit_scan_scope(Some(&family), false, true).expect("scope");
+        assert_eq!(together.full_history_clients, family);
+    }
+
     /// The tip is advice for a person at a prompt. Autosubmit's stdout is the
     /// scheduler log (`StandardOutPath` in the launchd plist), so printing it
     /// there is pure noise on every scheduled run.
@@ -10732,7 +10776,29 @@ mod tests {
 
         // A bounded submit still ships snapshot-integrity clients complete and
         // names them in `full_history_clients`, so their floors are populated.
-        let bounded_scope = submit_scan_scope(Some(&clients), false, true);
+        // A lone atomic-family member is not exempted — the receiver's family
+        // contract needs every member — so antigravity-cli carries no floor
+        // until the whole trio is selected.
+        let solo_bounded = submit_scan_scope(Some(&clients), false, true);
+        let solo_payload = to_ts_token_contribution_data(&graph, None, solo_bounded);
+        let solo_floors = solo_payload
+            .scan_scope
+            .as_ref()
+            .and_then(|s| s.retention_floors.as_ref())
+            .expect("floor populated for amp on a bounded submit");
+        assert!(!solo_floors.contains_key("antigravity-cli"));
+        assert_eq!(
+            solo_floors.get("amp").map(String::as_str),
+            Some("2026-08-07")
+        );
+
+        let family_clients = vec![
+            "antigravity".to_string(),
+            "antigravity-cli".to_string(),
+            "antigravity-extension".to_string(),
+            "amp".to_string(),
+        ];
+        let bounded_scope = submit_scan_scope(Some(&family_clients), false, true);
         let bounded_payload = to_ts_token_contribution_data(&graph, None, bounded_scope);
         let bounded_floors = bounded_payload
             .scan_scope
