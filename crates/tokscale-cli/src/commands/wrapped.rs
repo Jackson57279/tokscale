@@ -250,7 +250,6 @@ async fn load_wrapped_data(options: &WrappedOptions) -> Result<WrappedData> {
         group_by: GroupBy::default(),
         worktree_rollup: tokscale_core::WorktreeRollup::default(),
         scanner_settings: crate::tui::settings::load_scanner_settings(),
-        date_filter_exempt_clients: Default::default(),
     })
     .await
     .map_err(anyhow::Error::msg)?;

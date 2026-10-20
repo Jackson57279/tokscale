@@ -2313,7 +2313,6 @@ impl LocalReportContext {
             group_by,
             worktree_rollup,
             scanner_settings: self.scanner_settings.clone(),
-            date_filter_exempt_clients: Default::default(),
         }
     }
 }
@@ -6334,7 +6333,6 @@ fn drop_locally_scanned_usage(
             group_by: GroupBy::default(),
             worktree_rollup: tokscale_core::WorktreeRollup::default(),
             scanner_settings: tui::settings::load_scanner_settings(),
-            date_filter_exempt_clients: Default::default(),
         }))
         .map_err(|e| anyhow::anyhow!(e))?;
     Ok(drop_overlapping_rows(graph, &local))
@@ -6978,12 +6976,13 @@ fn run_submit_command(
         submit_scan_scope(clients.as_deref(), full_history_scan, amp_full_history_safe);
     // The receivers freeze these clients without complete coverage, so a
     // date-bounded submit ships their whole snapshot rather than dropping it.
-    let date_filter_exempt_clients = if full_history_scan {
-        std::collections::BTreeSet::new()
-    } else {
-        full_history_exempt_clients(clients.as_deref().unwrap_or(&[]), amp_full_history_safe)
-            .collect()
-    };
+    // The same list the scan scope serializes as `fullHistoryClients` is
+    // handed to the graph, so what the payload declares and what it ships
+    // cannot diverge.
+    let full_history_clients: std::collections::BTreeSet<String> = scan_scope
+        .as_ref()
+        .map(|scope| scope.full_history_clients.iter().cloned().collect())
+        .unwrap_or_default();
     if explicit_cursor_filter || explicit_warp_filter || explicit_hindsight_filter {
         let cursor_setup_warnings = setup_warnings_for_report(&report_home, &clients);
         emit_cursor_setup_warnings(&cursor_setup_warnings);
@@ -7039,18 +7038,20 @@ fn run_submit_command(
     let rt = Runtime::new()?;
     let mut graph_result = rt
         .block_on(async {
-            generate_submission_graph_v2(ReportOptions {
-                home_dir: None,
-                use_env_roots: true,
-                clients,
-                since,
-                until,
-                year,
-                group_by: GroupBy::default(),
-                worktree_rollup: tokscale_core::WorktreeRollup::default(),
-                scanner_settings: tui::settings::load_scanner_settings(),
-                date_filter_exempt_clients,
-            })
+            generate_submission_graph_v2(
+                ReportOptions {
+                    home_dir: None,
+                    use_env_roots: true,
+                    clients,
+                    since,
+                    until,
+                    year,
+                    group_by: GroupBy::default(),
+                    worktree_rollup: tokscale_core::WorktreeRollup::default(),
+                    scanner_settings: tui::settings::load_scanner_settings(),
+                },
+                &full_history_clients,
+            )
             .await
         })
         .map_err(|e| anyhow::anyhow!(e))?;

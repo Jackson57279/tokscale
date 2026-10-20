@@ -734,11 +734,6 @@ pub struct ReportOptions {
     /// Persistent scanner config loaded from `~/.config/tokscale/settings.json`.
     /// Defaults to empty when callers don't care about user-configured paths.
     pub scanner_settings: scanner::ScannerSettings,
-    /// Clients exempt from `since`/`until`/`year`: the receiver admits them
-    /// only from a complete snapshot, so filtering them out of a date-bounded
-    /// submission discards their usage instead of scoping it. Set by the
-    /// submission path only — local reports always leave it empty.
-    pub date_filter_exempt_clients: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -5432,6 +5427,7 @@ async fn generate_graph_with_loaded_pricing(
     options: ReportOptions,
     pricing: Option<&pricing::PricingService>,
     pricing_requirement: GraphPricingRequirement,
+    date_filter_exempt_clients: Option<&BTreeSet<String>>,
 ) -> Result<GraphResultV2, String> {
     let start = Instant::now();
     let captured_pricing = pricing.map(pricing::PricingService::with_cost_provenance_capture);
@@ -5455,7 +5451,12 @@ async fn generate_graph_with_loaded_pricing(
     // is what made this path hold every message at once (#1209); the sink
     // applies the same date filters per message and drops each one after it
     // has landed in the day map and produced its session span.
-    let mut sink = GraphSink::new(Some(&options), pricing, pricing_requirement);
+    let mut sink = GraphSink::new(
+        Some(&options),
+        date_filter_exempt_clients,
+        pricing,
+        pricing_requirement,
+    );
     if matches!(pricing_requirement, GraphPricingRequirement::Lenient)
         && recovery::applicable(&home_dir)
     {
@@ -5519,6 +5520,11 @@ struct GraphSink<'a> {
     /// `Some` when the sink is fed straight from the parse and must apply the
     /// report's date filters itself; `None` when the caller already filtered.
     filter: Option<&'a ReportOptions>,
+    /// Clients exempt from the `filter`'s date bounds: the receiver admits
+    /// them only from a complete snapshot, so a date-bounded submission must
+    /// ship their whole history or freeze them entirely. Set by the
+    /// submission path only; `None` for local reports.
+    date_filter_exempt_clients: Option<&'a BTreeSet<String>>,
     pricing: Option<&'a pricing::PricingService>,
     requirement: GraphPricingRequirement,
     buffer: Vec<(UnifiedMessage, Option<EstimateSource>)>,
@@ -5536,11 +5542,13 @@ struct GraphSink<'a> {
 impl<'a> GraphSink<'a> {
     fn new(
         filter: Option<&'a ReportOptions>,
+        date_filter_exempt_clients: Option<&'a BTreeSet<String>>,
         pricing: Option<&'a pricing::PricingService>,
         requirement: GraphPricingRequirement,
     ) -> Self {
         Self {
             filter,
+            date_filter_exempt_clients,
             pricing,
             requirement,
             buffer: Vec::new(),
@@ -5705,9 +5713,9 @@ impl MessageSink for GraphSink<'_> {
             // Exempt clients carry full-history authority: the scan already
             // read their complete sources, and a partial window for them
             // freezes rather than scopes. See FULL_HISTORY_SUBMIT_CLIENTS.
-            let exempt = options
+            let exempt = self
                 .date_filter_exempt_clients
-                .contains(message.client.as_str());
+                .is_some_and(|set| set.contains(message.client.as_str()));
             if !exempt && !message_passes_report_filter(&message, options) {
                 return;
             }
@@ -5756,7 +5764,7 @@ fn build_graph_from_messages(
     // sink applies none of its own. Delegating rather than duplicating keeps
     // this path and the streaming one on identical aggregation code, and lets
     // this function's tests stand as the sink's correctness proof.
-    let mut sink = GraphSink::new(None, pricing, pricing_requirement);
+    let mut sink = GraphSink::new(None, None, pricing, pricing_requirement);
     for message in filtered {
         sink.accept(message);
     }
@@ -5942,15 +5950,34 @@ pub async fn get_time_metrics_report(options: ReportOptions) -> Result<TimeMetri
 /// Version of [`generate_graph`] that retains cost provenance.
 pub async fn generate_graph_v2(options: ReportOptions) -> Result<GraphResultV2, String> {
     let pricing = pricing::PricingService::get_or_init().await?;
-    generate_graph_with_loaded_pricing(options, Some(&pricing), GraphPricingRequirement::Lenient)
-        .await
+    generate_graph_with_loaded_pricing(
+        options,
+        Some(&pricing),
+        GraphPricingRequirement::Lenient,
+        None,
+    )
+    .await
 }
 
 /// Version of [`generate_submission_graph`] that retains cost provenance.
-pub async fn generate_submission_graph_v2(options: ReportOptions) -> Result<GraphResultV2, String> {
+///
+/// `full_history_clients` is the list the submission declares complete in
+/// `scanScope.fullHistoryClients`: their messages bypass `since`/`until`/`year`
+/// so the payload actually contains the coverage it claims. Passing the same
+/// list the scan scope serializes keeps the declaration and the shipped data
+/// from diverging; see [`FULL_HISTORY_SUBMIT_CLIENTS`].
+pub async fn generate_submission_graph_v2(
+    options: ReportOptions,
+    full_history_clients: &BTreeSet<String>,
+) -> Result<GraphResultV2, String> {
     let pricing = pricing::PricingService::get_or_init().await?;
-    generate_graph_with_loaded_pricing(options, Some(&pricing), GraphPricingRequirement::Submission)
-        .await
+    generate_graph_with_loaded_pricing(
+        options,
+        Some(&pricing),
+        GraphPricingRequirement::Submission,
+        Some(full_history_clients),
+    )
+    .await
 }
 
 /// Version of [`generate_local_graph_report`] that retains cost provenance.
@@ -5962,6 +5989,7 @@ pub async fn generate_local_graph_report_v2(
         options,
         pricing.as_deref(),
         GraphPricingRequirement::Lenient,
+        None,
     )
     .await
 }
@@ -5984,6 +6012,7 @@ pub async fn generate_source_graph_report_v2(
         options,
         pricing.as_deref(),
         GraphPricingRequirement::LenientSourceOnly,
+        None,
     )
     .await
 }
@@ -8909,7 +8938,7 @@ mod tests {
         ] {
             assert!(!message_passes_report_filter(&message, &options));
         }
-        let mut sink = GraphSink::new(None, None, GraphPricingRequirement::Submission);
+        let mut sink = GraphSink::new(None, None, None, GraphPricingRequirement::Submission);
         sink.accept(message.clone());
         assert!(sink.buffer.is_empty());
         assert!(crate::aggregate_by_date(vec![message.clone()]).is_empty());
@@ -8927,7 +8956,7 @@ mod tests {
 
     #[test]
     fn graph_sink_keeps_only_one_bounded_pricing_batch() {
-        let mut sink = GraphSink::new(None, None, GraphPricingRequirement::Lenient);
+        let mut sink = GraphSink::new(None, None, None, GraphPricingRequirement::Lenient);
         for timestamp in 1..=(GRAPH_SINK_BATCH * 2 + 1) {
             sink.accept(UnifiedMessage::new(
                 "copilot",
@@ -9214,16 +9243,19 @@ mod tests {
             msg
         };
         let tz = crate::BucketTimezone::default();
-        let mut options = ReportOptions {
+        let options = ReportOptions {
             since: Some("2026-02-01".to_string()),
             until: Some("2026-02-28".to_string()),
             ..ReportOptions::default()
         };
-        options
-            .date_filter_exempt_clients
-            .insert("droid".to_string());
+        let exempt = BTreeSet::from(["droid".to_string()]);
 
-        let mut sink = GraphSink::new(Some(&options), None, GraphPricingRequirement::Lenient);
+        let mut sink = GraphSink::new(
+            Some(&options),
+            Some(&exempt),
+            None,
+            GraphPricingRequirement::Lenient,
+        );
         for message in [
             message("droid", "2025-12-01"),
             message("droid", "2026-02-10"),
@@ -18832,7 +18864,7 @@ mod tests {
         recovery::merge(&mut collector.messages, vec![recovered], vec![], |_| true);
         assert_eq!(collector.messages.len(), 2);
         let calculations = scan.detailed_calculation_count();
-        let mut sink = GraphSink::new(None, Some(&scan), GraphPricingRequirement::Lenient);
+        let mut sink = GraphSink::new(None, None, Some(&scan), GraphPricingRequirement::Lenient);
         for message in collector.messages {
             let source = collector.cost_estimates.take(&message);
             if message.session_id == "native" {
@@ -22248,10 +22280,10 @@ mod tests {
                     group_by: GroupBy::default(),
                     worktree_rollup: WorktreeRollup::default(),
                     scanner_settings: scanner::ScannerSettings::default(),
-                    date_filter_exempt_clients: Default::default(),
                 },
                 None,
                 GraphPricingRequirement::Lenient,
+                None,
             ))
             .unwrap();
 
