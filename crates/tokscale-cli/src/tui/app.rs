@@ -3464,6 +3464,7 @@ mod tests {
 
     fn usage_output(provider: &str, account: Option<UsageAccount>) -> UsageOutput {
         UsageOutput {
+            freshness: None,
             provider: provider.to_string(),
             account,
             credential_source: None,
@@ -5195,6 +5196,34 @@ mod tests {
         assert_eq!(app.subscription_usage.len(), 1);
         assert_eq!(app.subscription_usage[0].provider, "Codex");
         assert_eq!(app.status_message.as_deref(), Some("Usage data loaded"));
+    }
+
+    #[test]
+    fn test_usage_initial_tab_schedules_background_load() {
+        let app = App::new_with_cached_data(
+            TuiConfig {
+                initial_tab: Some(Tab::Usage),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(app.current_tab, Tab::Usage);
+        assert!(app.usage_fetch_attempted);
+        assert!(app.is_fetching_usage());
+    }
+
+    #[test]
+    fn test_pending_usage_load_keeps_quit_responsive_without_another_fetch() {
+        let mut app = make_app();
+        app.current_tab = Tab::Usage;
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        app.usage_rx = Some(receiver);
+        app.usage_fetcher = || panic!("a pending Usage load must not create another fetch");
+        app.refresh_usage();
+        assert!(app.is_fetching_usage());
+        assert!(app.handle_key_event(key(KeyCode::Char('q'))));
+        assert!(app.should_quit);
     }
 
     #[test]
