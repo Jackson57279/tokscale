@@ -28,15 +28,18 @@ import { createSafeRecord, ownValue } from "../safeRecord";
  * trajectory steps. All three source labels are admitted and reconciled as one
  * family because the same provider response can appear in multiple surfaces.
  *
- * Devin CLI is registered at generation 2: generation 1 deduplicated
- * `message_nodes` rows by database row id and counted the same API request
- * once per persisted copy, while generation 2 deduplicates by
- * `metadata.request_id`. Because that generation counts the same history
- * strictly LOWER, neither the merge guard nor the high-water can heal the
- * inflation — both only ever defend stored values. See RECOUNT_PROOF_CLIENTS.
+ * Devin CLI and Cursor are registered at submission generation 2. Devin CLI
+ * generation 1 counted one API request once per persisted database row; Cursor
+ * generation 1 counted every running snapshot of one `usageEventId`. Their
+ * generation-2 parsers collapse those duplicates, so the same history counts
+ * strictly LOWER. Neither the merge guard nor the high-water can heal that
+ * inflation because both only ever defend stored values. Submission generations
+ * are independent of each client's local source-cache parser version. See
+ * RECOUNT_PROOF_CLIENTS.
  */
 export const SUPPORTED_VERSIONED_PARSERS: Readonly<Record<string, number>> = {
   copilot: 2,
+  cursor: 2,
   droid: 1,
   "devin-cli": 2,
   // v2 moves exported Amp messages from the synthesized thread-created day to
@@ -68,7 +71,8 @@ const SNAPSHOT_LAYOUT_CLIENTS: ReadonlySet<string> = new Set(["droid", "amp"]);
  * Clients whose REGISTERED generation counts the same history differently in
  * absolute terms — unlike SNAPSHOT_LAYOUT_CLIENTS, where tokens only move
  * between days, a recounting generation legitimately lowers the credited
- * lifetime (Devin CLI gen 2 drops duplicate-row counting).
+ * lifetime (Devin CLI drops duplicate database rows; Cursor drops repeated
+ * event snapshots).
  *
  * Every ledger this file maintains is monotonic, so deflation cannot flow
  * through increments or a coverage-gated replace: a stored inflated cell
@@ -102,7 +106,41 @@ const SNAPSHOT_LAYOUT_CLIENTS: ReadonlySet<string> = new Set(["droid", "amp"]);
  * anything, and an empty snapshot keeps the transition pending rather than
  * establishing a baseline the parser never actually read.
  */
-const RECOUNT_PROOF_CLIENTS: ReadonlySet<string> = new Set(["devin-cli"]);
+const RECOUNT_PROOF_CLIENTS: ReadonlySet<string> = new Set([
+  "cursor",
+  "devin-cli",
+]);
+
+/**
+ * Recounting clients whose generations only drop rows the previous generation
+ * counted and never move usage to another day: Cursor generation 2 keeps one
+ * snapshot of each event, on a day where generation 1 already counted it.
+ *
+ * The lifetime budget below exists so that usage a generation re-dates cannot
+ * be credited twice. Under it, history that leaves the local scan
+ * (`tokscale cursor logout` archives that account's cache, and the scanner
+ * skips archives) would stop every later token from counting until the
+ * archived total was earned again. These clients budget growth per day
+ * instead: a day's token and message totals may rise to the snapshot's totals
+ * for that day and never above them, as they could under the ordinary per-day
+ * merge before registration. Costs and token buckets are attributed as for
+ * every versioned client, and only the recount proof at the device's
+ * transition lowers a stored day.
+ *
+ * This relies on each Cursor event keeping its timestamp across snapshots, as
+ * the snapshots of a real profile do (#1544). An event whose later snapshot
+ * moved to another day after the transition would be credited on both days,
+ * as the ordinary per-day merge did.
+ *
+ * The same assumption puts every duplicate snapshot on its survivor's day, so
+ * a recount proof moves a Cursor model's cost on that day's own pricing,
+ * whatever other days hold (`recountCostUnsafeModels`). A model the proof
+ * shows with no survivor on some day contradicts that for itself and still
+ * waits while any proof day is unpriced, as for every client. An event whose
+ * snapshots moved only in part cannot be told apart; if its survivor's day is
+ * unpriced, the moved snapshot's cost can be dropped with it.
+ */
+const PER_DAY_GROWTH_CLIENTS: ReadonlySet<string> = new Set(["cursor"]);
 
 /** One (day, model) cell as a parser generation counts it. */
 export interface RecountProofCell {
@@ -865,11 +903,13 @@ function applyRecountProofToDays(
  * - Every model the proof names once any of its days was rejected.
  * - Models the proof names on a day the snapshot could not price completely.
  *   A duplicate usually shares its survivor's model, and every day holding
- *   either is then a proof day for that model.
+ *   either is then a proof day for that model. A client whose duplicates
+ *   share their survivor's day (`survivorsShareTheirDay`) skips this: the
+ *   day's own pricing vouches for the cost it moves.
  * - While any proof day is unpriced, models the proof shows with no survivor
  *   on some day. Their duplicates' survivors lie on other days, possibly
- *   under another model id (a Devin CLI copy without its generation model), so
- *   no day's pricing can vouch for them alone.
+ *   under another model id (a Devin CLI copy without its generation model, or
+ *   a moved Cursor snapshot), so no day's pricing can vouch for them alone.
  *
  * A model with survivors whose duplicates also have survivors on another,
  * unpriced day under another model id cannot be told apart from the proof.
@@ -877,7 +917,8 @@ function applyRecountProofToDays(
 export function recountCostUnsafeModels(
   proof: ClientRecountProof,
   recount: { accepted: readonly string[]; rejected: readonly string[] },
-  costIncompleteDates: ReadonlySet<string>
+  costIncompleteDates: ReadonlySet<string>,
+  survivorsShareTheirDay = false
 ): Set<string> {
   const unsafe = new Set<string>();
   if (recount.rejected.length > 0) {
@@ -890,9 +931,11 @@ export function recountCostUnsafeModels(
     costIncompleteDates.has(date)
   );
   if (unpricedDates.length === 0) return unsafe;
-  for (const date of unpricedDates) {
-    for (const modelId of Object.keys(ownValue(proof, date) ?? {})) {
-      unsafe.add(modelId);
+  if (!survivorsShareTheirDay) {
+    for (const date of unpricedDates) {
+      for (const modelId of Object.keys(ownValue(proof, date) ?? {})) {
+        unsafe.add(modelId);
+      }
     }
   }
   for (const modelId of modelsWithoutSurvivors(proof, recount.accepted)) {
@@ -984,20 +1027,41 @@ function tokenCandidates(
   return candidates;
 }
 
+/** A day's token and message totals as the ledger and the route normalize it. */
+function normalizedDayTotals(day: ClientBreakdownData | undefined): {
+  tokens: number;
+  messages: number;
+} {
+  let tokens = 0;
+  let messages = 0;
+  for (const model of Object.values(modelsForHighWater(day))) {
+    tokens += model.tokens;
+    messages += model.messages;
+  }
+  return { tokens, messages };
+}
+
 function allocateIncrements(
+  client: string,
   previousCreditedDays: Record<string, ClientBreakdownData>,
   previousObservedDays: Record<string, ClientBreakdownData>,
   incomingDays: Record<string, ClientBreakdownData>,
   previousAggregate: ParserAggregateHighWater,
-  incomingAggregate: ParserAggregateHighWater
+  incomingAggregate: ParserAggregateHighWater,
+  growth: "lifetime" | "per-day" = "lifetime"
 ): Record<string, ClientBreakdownData> {
+  const perDay = growth === "per-day";
   // Keep the complete credited lifetime in the budget. A client-reported
   // retention boundary cannot prove that a missing old cell was pruned rather
   // than re-dated into this snapshot, so excluding it could credit it twice.
-  let tokenBudget = positive(incomingAggregate.tokens - previousAggregate.tokens);
-  let messageBudget = positive(
-    incomingAggregate.messages - previousAggregate.messages
-  );
+  // PER_DAY_GROWTH_CLIENTS budget per day instead: their generations only drop
+  // rows, and each event is assumed to keep its day (see the set's comment).
+  let tokenBudget = perDay
+    ? Number.POSITIVE_INFINITY
+    : positive(incomingAggregate.tokens - previousAggregate.tokens);
+  let messageBudget = perDay
+    ? Number.POSITIVE_INFINITY
+    : positive(incomingAggregate.messages - previousAggregate.messages);
   // Per-cell capacity below still reads the FULL credited ledger, so a
   // re-reported day cannot be credited twice.
   const previousObservedAggregate = aggregateSnapshot(previousObservedDays);
@@ -1010,6 +1074,21 @@ function allocateIncrements(
   const dates = Object.keys(incomingDays).sort((a, b) =>
     a === b ? 0 : a < b ? 1 : -1
   );
+  // Per-day growth: a day's token and message totals rise at most to the
+  // snapshot's totals for it. Bounding the day, not each model, also keeps
+  // usage that a later scan names under another model id from counting twice.
+  // Totals come from the normalized models the route adds increments to, so a
+  // legacy cell whose nested models exceed its scalar cannot be overfilled.
+  const dayTokenBudgets = createSafeRecord<number>();
+  const dayMessageBudgets = createSafeRecord<number>();
+  for (const date of perDay ? dates : []) {
+    const credited = normalizedDayTotals(ownValue(previousCreditedDays, date));
+    const incoming = normalizedDayTotals(incomingDays[date]);
+    dayTokenBudgets[date] = positive(incoming.tokens - credited.tokens);
+    dayMessageBudgets[date] = positive(incoming.messages - credited.messages);
+  }
+  const dayBudget = (budgets: Record<string, number>, date: string) =>
+    perDay ? ownValue(budgets, date) ?? 0 : Number.POSITIVE_INFINITY;
   const cells = dates.flatMap((date) => {
     const incoming = incomingDays[date];
     const creditedModels = modelsForHighWater(
@@ -1080,13 +1159,15 @@ function allocateIncrements(
           candidates[field],
           tokenBudget,
           cellBudget,
-          respectBucketBudgets ? bucketBudgets[field] : Number.POSITIVE_INFINITY
+          respectBucketBudgets ? bucketBudgets[field] : Number.POSITIVE_INFINITY,
+          dayBudget(dayTokenBudgets, cell.date)
         );
         cell.increment[field] += accepted;
         cell.increment.tokens += accepted;
         tokenBudget -= accepted;
         cellBudget -= accepted;
         if (respectBucketBudgets) bucketBudgets[field] -= accepted;
+        if (perDay) dayTokenBudgets[cell.date] -= accepted;
       }
     }
   };
@@ -1129,10 +1210,12 @@ function allocateIncrements(
       const accepted = Math.min(
         positive(candidateFor(cell)),
         messageBudget,
-        cellBudget
+        cellBudget,
+        dayBudget(dayMessageBudgets, cell.date)
       );
       cell.increment.messages += accepted;
       messageBudget -= accepted;
+      if (perDay) dayMessageBudgets[cell.date] -= accepted;
     }
   };
 
@@ -1152,11 +1235,26 @@ function allocateIncrements(
     Record<string, ModelBreakdownData>
   >();
   for (const cell of cells) {
-    if (cell.increment.tokens > 0) {
-      const acceptedFraction =
-        cell.tokenCapacity > 0
-          ? cell.increment.tokens / cell.tokenCapacity
-          : 0;
+    let acceptedFraction =
+      cell.increment.tokens > 0 && cell.tokenCapacity > 0
+        ? cell.increment.tokens / cell.tokenCapacity
+        : 0;
+    // Cursor's legacy premium-tool-call rows are billed per invocation, not
+    // per token, and are explicitly admitted by submission validation. Their
+    // message growth authorizes the same fraction of marginal cost that token
+    // growth does for normal rows. Keep this narrow: repricing with no new
+    // messages, another tokenless model, or a formerly token-bearing cell
+    // must not turn into newly credited spend.
+    if (
+      client === "cursor" &&
+      cell.modelId === "premium-tool-call" &&
+      cell.model.tokens === 0 &&
+      (cell.credited?.tokens ?? 0) === 0 &&
+      cell.messageCapacity > 0
+    ) {
+      acceptedFraction = cell.increment.messages / cell.messageCapacity;
+    }
+    if (acceptedFraction > 0) {
       const marginalCost = positive(
         cell.model.cost - (cell.credited?.cost ?? 0)
       );
@@ -1227,6 +1325,9 @@ function validState(
  * with uncredited capacity receives the bounded remainder. Only increments
  * actually written advance the credited ledger, so growth cannot be lost.
  * Date/model reshuffles and deleted local history never erase stored rows.
+ * PER_DAY_GROWTH_CLIENTS bound that growth per day instead of by the lifetime
+ * high-water, because their generations only drop rows and each event is
+ * assumed to keep its day.
  *
  * SNAPSHOT_LAYOUT_CLIENTS are the deliberate exception to both absolutes
  * above: once a full snapshot's aggregate covers the credited one, the stored
@@ -1281,14 +1382,15 @@ export function planParserHighWaterSubmission(args: {
   if (args.incomingVersion == null) {
     return args.state ? { mode: "freeze", increments: {} } : { mode: "status-quo", increments: {} };
   }
-  // Amp v1 and Devin CLI v1 are already released when their receivers deploy.
-  // Keep accepting them for devices that have not transitioned yet, but never
-  // let an older CLI rewrite a device after the receiver has started the new
-  // generation. This preserves the existing submit behavior during the
-  // server-before-CLI rollout without reopening a completed (or pending)
-  // transition to the old parser.
+  // Amp, Devin CLI, and Cursor v1 are already released when their receivers
+  // deploy. Keep accepting them for devices that have not transitioned yet,
+  // but never let an older CLI rewrite a device after the receiver has started
+  // the new generation. This preserves the server-before-CLI rollout without
+  // reopening a completed (or pending) transition to the old parser.
   if (
-    (args.client === "amp" || args.client === "devin-cli") &&
+    (args.client === "amp" ||
+      args.client === "cursor" ||
+      args.client === "devin-cli") &&
     args.incomingVersion === 1
   ) {
     return args.state
@@ -1327,6 +1429,7 @@ export function planParserHighWaterSubmission(args: {
   // provable growth, so a corrected cell converges on the truth from either
   // side. After the transition it can only restate a floored cost (see
   // `applyRecountProofToCell`).
+  const growth = PER_DAY_GROWTH_CLIENTS.has(args.client) ? "per-day" : "lifetime";
   const proof = RECOUNT_PROOF_CLIENTS.has(args.client)
     ? args.recountProof
     : undefined;
@@ -1335,7 +1438,12 @@ export function planParserHighWaterSubmission(args: {
     : { accepted: [], rejected: [] };
   const costIncompleteDates = args.costIncompleteDates ?? new Set<string>();
   const costUnsafeModels = proof
-    ? recountCostUnsafeModels(proof, recount, costIncompleteDates)
+    ? recountCostUnsafeModels(
+        proof,
+        recount,
+        costIncompleteDates,
+        PER_DAY_GROWTH_CLIENTS.has(args.client)
+      )
     : new Set<string>();
   const correctLedger = (
     days: Record<string, ClientBreakdownData>,
@@ -1404,11 +1512,13 @@ export function planParserHighWaterSubmission(args: {
     // that provable remainder.
     const increments = hasLegacy
       ? allocateIncrements(
+          args.client,
           existingLegacyDays,
           existingLegacyDays,
           args.incomingDays,
           legacyAggregate,
-          incomingAggregate
+          incomingAggregate,
+          growth
         )
       : createSafeRecord<ClientBreakdownData>();
     const nextState = hasLegacy
@@ -1463,16 +1573,21 @@ export function planParserHighWaterSubmission(args: {
   });
   if (followed) return followed;
   const increments = allocateIncrements(
+    args.client,
     previousCreditedDays,
     previousObservedDays,
     args.incomingDays,
     previousAggregate,
-    incomingAggregate
+    incomingAggregate,
+    growth
   );
 
-  const highWaterDeficit = positive(
-    previousAggregate.tokens - incomingAggregate.tokens
-  );
+  // Only a lifetime budget withholds growth while the scan sits below the
+  // credited baseline; per-day growth has no such deficit to report.
+  const highWaterDeficit =
+    growth === "lifetime"
+      ? positive(previousAggregate.tokens - incomingAggregate.tokens)
+      : 0;
   return {
     mode: "incremental",
     increments,

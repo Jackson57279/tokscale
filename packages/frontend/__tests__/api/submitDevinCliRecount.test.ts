@@ -189,7 +189,7 @@ function newStore(): Store {
   };
 }
 
-function devinCell(
+function recountCell(
   tokens: number,
   cost: number,
   messages = 1,
@@ -433,10 +433,28 @@ function installTx(store: Store) {
   );
 }
 
+type RecountClientCase = {
+  client: string;
+  modelId: string;
+  label: string;
+};
+
+const DEVIN_RECOUNT_CASE: RecountClientCase = {
+  client: "devin-cli",
+  modelId: "swe-2-high",
+  label: "Devin CLI",
+};
+const CURSOR_RECOUNT_CASE: RecountClientCase = {
+  client: "cursor",
+  modelId: "gemini-4-argon-medium",
+  label: "Cursor",
+};
+
 type BodyDay = {
   date: string;
   tokens: number;
   cost?: number;
+  messages?: number;
   /**
    * What parser generation 1 counted for this day from the same rows. When
    * present, the body carries a recount proof entry for the day whose
@@ -466,9 +484,12 @@ function submissionBody(
      * there that generation 2 drops entirely, so the corrected side is empty.
      */
     allDuplicateDays?: Array<{ date: string; previous: { tokens: number; cost?: number; messages?: number } }>;
+    recountClient?: RecountClientCase;
   } = {},
 ) {
-  const version = options.version ?? SUPPORTED_VERSIONED_PARSERS["devin-cli"];
+  const recountClient = options.recountClient ?? DEVIN_RECOUNT_CASE;
+  const version =
+    options.version ?? SUPPORTED_VERSIONED_PARSERS[recountClient.client];
   const dates = days.map((day) => day.date).sort();
   const dayCost = (day: BodyDay) => day.cost ?? day.tokens / 1000;
   const proofDays = Object.fromEntries(
@@ -476,6 +497,7 @@ function submissionBody(
       ...(options.allDuplicateDays ?? []).map((day) => ({
         date: day.date,
         tokens: 0,
+        messages: 0,
         previous: day.previous,
         provenCorrected: { tokens: 0, cost: 0, messages: 0 },
       })),
@@ -483,11 +505,15 @@ function submissionBody(
     ]
       .filter((day) => day.previous)
       .map((day) => {
-        const corrected = day.provenCorrected ?? { tokens: day.tokens, cost: dayCost(day), messages: 1 };
+        const corrected = day.provenCorrected ?? {
+          tokens: day.tokens,
+          cost: dayCost(day),
+          messages: day.messages ?? 1,
+        };
         return [
           day.date,
           {
-            "swe-2-high": {
+            [recountClient.modelId]: {
               previous: proofCell(
                 day.previous!.tokens,
                 day.previous!.cost ?? day.previous!.tokens / 1000,
@@ -511,26 +537,26 @@ function submissionBody(
       dateRange: { start: dates[0], end: dates[dates.length - 1] },
     },
     scanScope: {
-      parserVersions: { "devin-cli": version },
+      parserVersions: { [recountClient.client]: version },
       fullHistory: options.fullHistory ?? true,
       ...(Object.keys(proofDays).length > 0
-        ? { recountProofs: { "devin-cli": proofDays } }
+        ? { recountProofs: { [recountClient.client]: proofDays } }
         : {}),
     },
-    summary: { clients: ["devin-cli"] },
+    summary: { clients: [recountClient.client] },
     years: [],
     contributions: days.map((day) => ({
       date: day.date,
       totals: {
         tokens: day.tokens,
         cost: dayCost(day),
-        messages: 1,
+        messages: day.messages ?? 1,
         costIsComplete: options.costIsComplete ?? true,
       },
       clients: [
         {
-          client: "devin-cli",
-          modelId: "swe-2-high",
+          client: recountClient.client,
+          modelId: recountClient.modelId,
           tokens: {
             input: day.tokens,
             output: 0,
@@ -539,7 +565,7 @@ function submissionBody(
             reasoning: 0,
           },
           cost: dayCost(day),
-          messages: 1,
+          messages: day.messages ?? 1,
         },
       ],
     })),
@@ -603,7 +629,7 @@ const CORRECTED_SCAN: BodyDay[] = [
 
 function seedInflatedDays(store: Store) {
   for (const day of INFLATED_DAYS) {
-    seedDay(store, day.date, { "devin-cli": devinCell(day.tokens, day.cost) });
+    seedDay(store, day.date, { "devin-cli": recountCell(day.tokens, day.cost) });
   }
 }
 
@@ -663,7 +689,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
     // must not take A's 50 off here: every later submit with this same proof
     // would take them off again and wear B's 600 down to 350.
     const store = newStore();
-    seedDay(store, "2026-10-08", { "devin-cli": devinCell(1_000, 1) });
+    seedDay(store, "2026-10-08", { "devin-cli": recountCell(1_000, 1) });
 
     const partial = () =>
       submissionBody([
@@ -687,7 +713,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
 
     // A device whose transition reads both databases heals the day then.
     const healed = newStore();
-    seedDay(healed, "2026-10-08", { "devin-cli": devinCell(1_000, 1) });
+    seedDay(healed, "2026-10-08", { "devin-cli": recountCell(1_000, 1) });
     await submit(healed, bothDatabases());
     expect(storedClientTokens(healed, "2026-10-08", "devin-cli")).toBe(890);
     expect(storedCost(healed)).toBeCloseTo(0.89, 4);
@@ -697,7 +723,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
     // Databases A and B fed the stored day: 200 tokens under generation 1
     // from each, 100 under generation 2 from each. The first submit reads both.
     const store = newStore();
-    seedDay(store, "2026-10-08", { "devin-cli": devinCell(400, 0.4) });
+    seedDay(store, "2026-10-08", { "devin-cli": recountCell(400, 0.4) });
 
     await submit(
       store,
@@ -726,7 +752,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
     // proof corrects 200 tokens to 100 at $0.10: the same counts, but nothing
     // in it explains B's cost.
     const store = newStore();
-    seedDay(store, "2026-10-08", { "devin-cli": devinCell(100, 0.15) });
+    seedDay(store, "2026-10-08", { "devin-cli": recountCell(100, 0.15) });
     for (let submitIndex = 0; submitIndex < 2; submitIndex += 1) {
       await submit(
         store,
@@ -744,7 +770,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
     // the databases behind it, so the day is kept and its cost is still only
     // a lower bound after a complete snapshot.
     const store = newStore();
-    const floored = devinCell(1_000, 1);
+    const floored = recountCell(1_000, 1);
     floored.provenance = { schemaVersion: 1, messageCount: 1, modelCount: 1, costIsComplete: false };
     seedDay(store, "2026-10-08", { "devin-cli": floored });
 
@@ -776,8 +802,8 @@ describe("POST /api/submit devin-cli recount proof", () => {
         reasoning: 0,
         messages: 2,
         models: {
-          "swe-2-high": devinCell(200, 0.3).models["swe-2-high"],
-          "swe-1-5": devinCell(50, 0.2, 1, "swe-1-5").models["swe-1-5"],
+          "swe-2-high": recountCell(200, 0.3).models["swe-2-high"],
+          "swe-1-5": recountCell(50, 0.2, 1, "swe-1-5").models["swe-1-5"],
         },
         provenance: { schemaVersion: 1, messageCount: 2, modelCount: 2, costIsComplete: false },
       },
@@ -804,7 +830,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
     // The stored $0.50 is a floor above what generation 1 priced these rows
     // at ($0.20), so the proof does not account for it and it is kept.
     const store = newStore();
-    const floored = devinCell(200, 0.5);
+    const floored = recountCell(200, 0.5);
     floored.provenance = { schemaVersion: 1, messageCount: 1, modelCount: 1, costIsComplete: false };
     seedDay(store, "2026-10-08", { "devin-cli": floored });
 
@@ -825,7 +851,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
     // The floored cell already holds the corrected counts and cost, so the
     // proof changes no amount; it only shows the cost to be complete.
     const store = newStore();
-    const floored = devinCell(100, 0.1);
+    const floored = recountCell(100, 0.1);
     floored.provenance = { schemaVersion: 1, messageCount: 1, modelCount: 1, costIsComplete: false };
     seedDay(store, "2026-10-08", { "devin-cli": floored });
 
@@ -846,7 +872,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
     // Database B's floored $0.15 for 120 tokens; database A's proof corrects
     // 200 tokens to 100 at $0.10. Nothing in it describes B's cell.
     const store = newStore();
-    const floored = devinCell(120, 0.15);
+    const floored = recountCell(120, 0.15);
     floored.provenance = { schemaVersion: 1, messageCount: 1, modelCount: 1, costIsComplete: false };
     seedDay(store, "2026-10-08", { "devin-cli": floored });
     for (let submitIndex = 0; submitIndex < 2; submitIndex += 1) {
@@ -1015,9 +1041,9 @@ describe("POST /api/submit devin-cli recount proof", () => {
     const store = newStore();
     // Stored lifetime $60: $10 on the uncovered day, $20 and $30 on the two
     // the corrected scan reports.
-    seedDay(store, "2026-10-06", { "devin-cli": devinCell(1_000, 10) });
-    seedDay(store, "2026-10-07", { "devin-cli": devinCell(2_000, 20) });
-    seedDay(store, "2026-10-08", { "devin-cli": devinCell(3_000, 30) });
+    seedDay(store, "2026-10-06", { "devin-cli": recountCell(1_000, 10) });
+    seedDay(store, "2026-10-07", { "devin-cli": recountCell(2_000, 20) });
+    seedDay(store, "2026-10-08", { "devin-cli": recountCell(3_000, 30) });
     const corrected: BodyDay[] = [
       { date: "2026-10-07", tokens: 900, cost: 5, previous: { tokens: 2_000, cost: 20 } },
       { date: "2026-10-08", tokens: 1_200, cost: 8, previous: { tokens: 3_000, cost: 30 } },
@@ -1067,7 +1093,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
     // estimate them: the proof carries the estimate ($0.20 previous, $0.10
     // corrected) while the submission zeroed it and marked the day incomplete.
     const store = newStore();
-    seedDay(store, "2026-10-08", { "devin-cli": devinCell(200, 0.15) });
+    seedDay(store, "2026-10-08", { "devin-cli": recountCell(200, 0.15) });
 
     await submit(
       store,
@@ -1096,7 +1122,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
 
   it("keeps the planner ledger and the stored cost in step after an incomplete transition", async () => {
     const store = newStore();
-    seedDay(store, "2026-10-08", { "devin-cli": devinCell(2_000, 20) });
+    seedDay(store, "2026-10-08", { "devin-cli": recountCell(2_000, 20) });
     const ledgerCost = () =>
       (store.device.parserStates["devin-cli"] as ParserClientHighWaterState).days["2026-10-08"]?.cost;
 
@@ -1138,7 +1164,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
     // never stored. With the 8th emptied no stored usage is left, but the
     // stored row still has to go, or the 9th would count it a second time.
     const store = newStore();
-    seedDay(store, "2026-10-08", { "devin-cli": devinCell(100, 0.1) });
+    seedDay(store, "2026-10-08", { "devin-cli": recountCell(100, 0.1) });
     const body = (tokens: number) =>
       submissionBody(
         [{ date: "2026-10-09", tokens, cost: tokens / 1000, previous: { tokens, cost: tokens / 1000 } }],
@@ -1163,7 +1189,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
     // survivor's price is unknown, so the emptied 8th keeps its cost as a
     // floor.
     const store = newStore();
-    seedDay(store, "2026-10-08", { "devin-cli": devinCell(100, 0.15) });
+    seedDay(store, "2026-10-08", { "devin-cli": recountCell(100, 0.15) });
     const body = (costIsComplete: boolean) =>
       submissionBody(
         [{ date: "2026-10-09", tokens: 50, cost: 0.05, previous: { tokens: 50, cost: 0.05 } }],
@@ -1208,8 +1234,8 @@ describe("POST /api/submit devin-cli recount proof", () => {
         reasoning: 0,
         messages: 2,
         models: {
-          "swe-2-high": devinCell(200, 0.2).models["swe-2-high"],
-          "swe-1-5": devinCell(100, 0.15, 1, "swe-1-5").models["swe-1-5"],
+          "swe-2-high": recountCell(200, 0.2).models["swe-2-high"],
+          "swe-1-5": recountCell(100, 0.15, 1, "swe-1-5").models["swe-1-5"],
         },
       },
     });
@@ -1269,7 +1295,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
     // submission zeroed its estimate. Lowering the 8th to $0.05 now would
     // lose B's $0.10 while the 9th holds $0.
     const store = newStore();
-    seedDay(store, "2026-10-08", { "devin-cli": devinCell(200, 0.15) });
+    seedDay(store, "2026-10-08", { "devin-cli": recountCell(200, 0.15) });
     const body = (ninthIsComplete: boolean) => {
       const submission = submissionBody([
         { date: "2026-10-08", tokens: 100, cost: 0.05, previous: { tokens: 200, cost: 0.15 } },
@@ -1308,7 +1334,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
     // corrected generation keeps on the 9th under swe-2-high. The 9th is
     // unpriced, so the 8th keeps its $0.15 until it is.
     const store = newStore();
-    seedDay(store, "2026-10-08", { "devin-cli": devinCell(100, 0.15, 1, "swe-1-5") });
+    seedDay(store, "2026-10-08", { "devin-cli": recountCell(100, 0.15, 1, "swe-1-5") });
     const body = (ninthIsComplete: boolean) => {
       const submission = submissionBody([
         {
@@ -1347,8 +1373,8 @@ describe("POST /api/submit devin-cli recount proof", () => {
     // request_id duplicates of the 7th (a response persisted across
     // midnight). Generation 2 counts nothing on the 6th, so the snapshot
     // never dates it; only the proof can say why the stored row is empty.
-    seedDay(store, "2026-10-06", { "devin-cli": devinCell(1_000, 10) });
-    seedDay(store, "2026-10-07", { "devin-cli": devinCell(2_000, 20) });
+    seedDay(store, "2026-10-06", { "devin-cli": recountCell(1_000, 10) });
+    seedDay(store, "2026-10-07", { "devin-cli": recountCell(2_000, 20) });
 
     const json = await submit(
       store,
@@ -1372,7 +1398,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
 
   it("refuses a proof whose corrected cost sits below the submitted snapshot", async () => {
     const store = newStore();
-    seedDay(store, "2026-10-07", { "devin-cli": devinCell(2_000, 20) });
+    seedDay(store, "2026-10-07", { "devin-cli": recountCell(2_000, 20) });
 
     // The token side reproduces the snapshot exactly, but the proof claims
     // the corrected rows cost nothing while the snapshot prices them at $9.
@@ -1398,4 +1424,262 @@ describe("POST /api/submit devin-cli recount proof", () => {
       ),
     ).toBe(true);
   });
+});
+
+describe("POST /api/submit cursor recount proof", () => {
+  it("corrects stored Cursor snapshots through the generic route protocol", async () => {
+    const store = newStore();
+    seedDay(store, "2026-10-08", {
+      [CURSOR_RECOUNT_CASE.client]: recountCell(
+        1_000,
+        10,
+        4,
+        CURSOR_RECOUNT_CASE.modelId,
+      ),
+    });
+
+    const json = await submit(
+      store,
+      submissionBody(
+        [
+          {
+            date: "2026-10-08",
+            tokens: 400,
+            cost: 4,
+            messages: 1,
+            previous: { tokens: 1_000, cost: 10, messages: 4 },
+          },
+        ],
+        { recountClient: CURSOR_RECOUNT_CASE },
+      ),
+    );
+
+    const cell = store.days.find((day) => day.date === "2026-10-08")!
+      .sourceBreakdown[CURSOR_RECOUNT_CASE.client];
+    expect(cell.tokens).toBe(400);
+    expect(cell.cost).toBeCloseTo(4, 4);
+    expect(cell.messages).toBe(1);
+    expect(cell.models[CURSOR_RECOUNT_CASE.modelId].tokens).toBe(400);
+    expect(cell.models[CURSOR_RECOUNT_CASE.modelId].messages).toBe(1);
+    expect(store.device.parserVersions[CURSOR_RECOUNT_CASE.client]).toBe(2);
+    expect(
+      json.warnings?.some((warning: string) =>
+        warning.includes(
+          `Corrected ${CURSOR_RECOUNT_CASE.label} history on 1 day(s)`,
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps Cursor usage the proof cannot explain across replays", async () => {
+    // The cache no longer holds every snapshot this device once submitted:
+    // the proof's rows explain 500 of the stored 1,000 tokens. Taking the
+    // proven 400 off on every submit would wear the day down to 100.
+    const store = newStore();
+    seedDay(store, "2026-10-08", {
+      [CURSOR_RECOUNT_CASE.client]: recountCell(
+        1_000,
+        10,
+        4,
+        CURSOR_RECOUNT_CASE.modelId,
+      ),
+    });
+    const partial = () =>
+      submissionBody(
+        [
+          {
+            date: "2026-10-08",
+            tokens: 100,
+            cost: 1,
+            messages: 1,
+            previous: { tokens: 500, cost: 5, messages: 2 },
+          },
+        ],
+        { recountClient: CURSOR_RECOUNT_CASE },
+      );
+
+    for (let replay = 0; replay < 3; replay += 1) {
+      await submit(store, partial());
+      const cell = store.days.find((day) => day.date === "2026-10-08")!
+        .sourceBreakdown[CURSOR_RECOUNT_CASE.client];
+      expect(cell.tokens).toBe(1_000);
+      expect(cell.cost).toBeCloseTo(10, 4);
+      expect(cell.messages).toBe(4);
+    }
+    expect(store.device.parserVersions[CURSOR_RECOUNT_CASE.client]).toBe(2);
+  });
+
+  it("keeps a Cursor day's cost while a moved snapshot's survivor is unpriced", async () => {
+    // Real Cursor snapshots keep their event's day (#1544). If one did not,
+    // every stored row on the 8th could be an earlier snapshot of an event
+    // whose survivor is dated the 9th, which this submission could not price.
+    // The proof shows the model without a survivor on the 8th, so its cost
+    // waits for the 9th to be priced.
+    const store = newStore();
+    seedDay(store, "2026-10-08", {
+      [CURSOR_RECOUNT_CASE.client]: recountCell(100, 0.15, 1, CURSOR_RECOUNT_CASE.modelId),
+    });
+    const options = (costIsComplete: boolean) => ({
+      recountClient: CURSOR_RECOUNT_CASE,
+      costIsComplete,
+      allDuplicateDays: [{ date: "2026-10-08", previous: { tokens: 100, cost: 0.2, messages: 1 } }],
+    });
+    const ninth = (cost: number) => [
+      {
+        date: "2026-10-09",
+        tokens: 100,
+        cost,
+        messages: 1,
+        previous: { tokens: 100, cost: 0.15, messages: 1 },
+        provenCorrected: { tokens: 100, cost: 0.15, messages: 1 },
+      },
+    ];
+
+    await submit(store, submissionBody(ninth(0), options(false)));
+    const floored = store.days.find((day) => day.date === "2026-10-08")?.sourceBreakdown[CURSOR_RECOUNT_CASE.client];
+    expect(floored?.tokens).toBe(0);
+    expect(floored?.cost).toBeCloseTo(0.15, 4);
+    expect(floored?.provenance?.costIsComplete).toBe(false);
+
+    await submit(store, submissionBody(ninth(0.15), options(true)));
+    expect(storedClientTokens(store, "2026-10-08", CURSOR_RECOUNT_CASE.client)).toBeUndefined();
+    expect(storedCost(store)).toBeCloseTo(0.15, 4);
+  });
+
+  it("keeps a corrected Cursor day when one of its accounts is logged out", async () => {
+    // Accounts A and B both used Cursor on 2026-10-08: 200 tokens each under
+    // generation 1, 100 each once snapshots are collapsed. The first
+    // generation-2 submit reads both caches and corrects the day to 200.
+    const store = newStore();
+    seedDay(store, "2026-10-08", {
+      [CURSOR_RECOUNT_CASE.client]: recountCell(400, 4, 4, CURSOR_RECOUNT_CASE.modelId),
+    });
+    const options = { recountClient: CURSOR_RECOUNT_CASE };
+    await submit(
+      store,
+      submissionBody(
+        [{ date: "2026-10-08", tokens: 200, cost: 2, messages: 2, previous: { tokens: 400, cost: 4, messages: 4 } }],
+        options,
+      ),
+    );
+    expect(storedClientTokens(store, "2026-10-08", CURSOR_RECOUNT_CASE.client)).toBe(200);
+
+    // `tokscale cursor logout` archives B's cache. A's proof still counts A's
+    // duplicates under generation 1, and its previous side (200 tokens, 2
+    // messages) equals the corrected day exactly; B's 100 must stay.
+    for (let replay = 0; replay < 2; replay += 1) {
+      await submit(
+        store,
+        submissionBody(
+          [{ date: "2026-10-08", tokens: 100, cost: 1, messages: 1, previous: { tokens: 200, cost: 2, messages: 2 } }],
+          options,
+        ),
+      );
+      expect(storedClientTokens(store, "2026-10-08", CURSOR_RECOUNT_CASE.client)).toBe(200);
+      expect(storedCost(store)).toBeCloseTo(2, 4);
+    }
+  });
+
+  it("keeps crediting new Cursor usage after an account's cache is archived", async () => {
+    // 2026-10-01 came from an account the user logged out of: its cache is
+    // archived and no longer scanned. 2026-10-08 is the account still in use.
+    const store = newStore();
+    seedDay(store, "2026-10-01", {
+      [CURSOR_RECOUNT_CASE.client]: recountCell(5_000, 50, 10, CURSOR_RECOUNT_CASE.modelId),
+    });
+    seedDay(store, "2026-10-08", {
+      [CURSOR_RECOUNT_CASE.client]: recountCell(1_000, 10, 4, CURSOR_RECOUNT_CASE.modelId),
+    });
+    const options = { recountClient: CURSOR_RECOUNT_CASE };
+    const inUse = { date: "2026-10-08", tokens: 400, cost: 4, messages: 1, previous: { tokens: 1_000, cost: 10, messages: 4 } };
+
+    await submit(store, submissionBody([inUse], options));
+    expect(storedClientTokens(store, "2026-10-08", CURSOR_RECOUNT_CASE.client)).toBe(400);
+    expect(storedClientTokens(store, "2026-10-01", CURSOR_RECOUNT_CASE.client)).toBe(5_000);
+
+    const json = await submit(
+      store,
+      submissionBody([inUse, { date: "2026-10-09", tokens: 300, cost: 3, messages: 1 }], options),
+    );
+    expect(storedClientTokens(store, "2026-10-09", CURSOR_RECOUNT_CASE.client)).toBe(300);
+    expect(storedClientTokens(store, "2026-10-08", CURSOR_RECOUNT_CASE.client)).toBe(400);
+    expect(storedClientTokens(store, "2026-10-01", CURSOR_RECOUNT_CASE.client)).toBe(5_000);
+    expect(
+      (json.warnings ?? []).some((warning: string) => warning.includes("Added no Cursor tokens")),
+    ).toBe(false);
+  });
+});
+
+describe("POST /api/submit legacy Cursor tokenless cost", () => {
+  it("credits a newly discovered legacy day once after the parser baseline", async () => {
+    const store = newStore();
+    const options = {
+      recountClient: { ...CURSOR_RECOUNT_CASE, modelId: "premium-tool-call" },
+    };
+    const original = { date: "2025-04-14", tokens: 0, cost: 0.02, messages: 1 };
+    const discovered = { date: "2025-04-15", tokens: 0, cost: 0.02, messages: 1 };
+    await submit(store, submissionBody([original], options));
+    expect(storedCost(store)).toBeCloseTo(0.02, 4);
+    const rescan = [original, discovered].map((day) => ({
+      ...day,
+      previous: { tokens: day.tokens, cost: day.cost, messages: day.messages },
+    }));
+    for (let replay = 0; replay < 3; replay++) {
+      await submit(store, submissionBody(rescan, options));
+      const stored = store.days.find((day) => day.date === discovered.date)!
+        .sourceBreakdown.cursor;
+      const ledger = store.device.parserStates.cursor as ParserClientHighWaterState;
+      expect(stored.messages).toBe(1);
+      expect(stored.cost).toBeCloseTo(0.02, 4);
+      expect(ledger.days[discovered.date]?.cost).toBeCloseTo(stored.cost, 4);
+      expect(storedCost(store)).toBeCloseTo(0.04, 4);
+    }
+  });
+
+  it.each([
+    { modelId: "premium-tool-call", beforeTokens: 0, afterTokens: 0 },
+    { modelId: "gemini-4-argon-medium", beforeTokens: 100, afterTokens: 200 },
+  ])(
+    "credits new $modelId usage without repricing or replaying its cost",
+    async ({ modelId, beforeTokens, afterTokens }) => {
+      const store = newStore();
+      const options = { recountClient: { ...CURSOR_RECOUNT_CASE, modelId } };
+      const date = "2025-04-15";
+      await submit(
+        store,
+        submissionBody(
+          [{ date, tokens: beforeTokens, cost: 0.02, messages: 1 }],
+          options,
+        ),
+      );
+      const grown = { date, tokens: afterTokens, cost: 0.05, messages: 2 };
+      const scan = {
+        ...grown,
+        previous: {
+          tokens: grown.tokens,
+          cost: grown.cost,
+          messages: grown.messages,
+        },
+      };
+      for (let replay = 0; replay < 3; replay++) {
+        await submit(store, submissionBody([scan], options));
+        const stored = store.days.find((day) => day.date === date)!
+          .sourceBreakdown.cursor;
+        const ledger = store.device.parserStates.cursor as ParserClientHighWaterState;
+        expect(stored.tokens).toBe(afterTokens);
+        expect(stored.messages).toBe(2);
+        expect(stored.cost).toBeCloseTo(0.05, 4);
+        expect(ledger.days[date]?.cost).toBeCloseTo(stored.cost, 4);
+      }
+      // A new price without a new billed invocation/token is not new spend.
+      await submit(
+        store,
+        submissionBody(
+          [{ ...scan, cost: 0.09, previous: { ...scan.previous, cost: 0.09 } }],
+          options,
+        ),
+      );
+      expect(storedCost(store)).toBeCloseTo(0.05, 4);
+    },
+  );
 });

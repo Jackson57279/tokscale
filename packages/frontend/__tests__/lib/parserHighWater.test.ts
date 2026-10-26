@@ -2427,6 +2427,375 @@ describe("devin-cli recount proof", () => {
   });
 });
 
+describe("cursor recount proof rollout", () => {
+  const client = "cursor";
+  const modelId = "gemini-4-argon-medium";
+
+  function cursorContribution(
+    date: string,
+    tokens: number,
+    cost: number,
+    messages: number
+  ) {
+    return {
+      date,
+      clients: [
+        {
+          client,
+          modelId,
+          tokens: {
+            input: tokens,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            reasoning: 0,
+          },
+          cost,
+          messages,
+        },
+      ],
+    };
+  }
+
+  function cursorSnapshot(
+    ...rows: ReturnType<typeof cursorContribution>[]
+  ): Record<string, ClientBreakdownData> {
+    return foldParserClientSnapshot(rows, client);
+  }
+
+  function cursorProofCell(
+    tokens: number,
+    cost: number,
+    messages: number
+  ): RecountProofCell {
+    return {
+      tokens: {
+        input: tokens,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        reasoning: 0,
+      },
+      cost,
+      messages,
+    };
+  }
+
+  function cursorProof(
+    previous: RecountProofCell,
+    corrected: RecountProofCell
+  ): ClientRecountProof {
+    return {
+      "2026-10-08": {
+        [modelId]: { previous, corrected },
+      },
+    };
+  }
+
+  function cursorPlan(args: {
+    existing: Record<string, ClientBreakdownData>;
+    incoming: Record<string, ClientBreakdownData>;
+    fullHistory?: boolean;
+    incomingVersion?: number;
+    state?: ParserClientHighWaterState;
+    persistedVersion?: number;
+    recountProof?: ClientRecountProof;
+  }) {
+    return planParserHighWaterSubmission({
+      client,
+      incomingVersion:
+        args.incomingVersion ?? SUPPORTED_VERSIONED_PARSERS.cursor,
+      fullHistory: args.fullHistory ?? true,
+      existingLegacyDays: args.existing,
+      incomingDays: args.incoming,
+      state: args.state,
+      persistedVersion: args.persistedVersion,
+      recountProof: args.recountProof,
+    });
+  }
+
+  const inflated = cursorSnapshot(
+    cursorContribution("2026-10-08", 1_000, 10, 4)
+  );
+  const corrected = cursorSnapshot(
+    cursorContribution("2026-10-08", 400, 4, 1)
+  );
+  const proof = cursorProof(
+    cursorProofCell(1_000, 10, 4),
+    cursorProofCell(400, 4, 1)
+  );
+
+  it("moves a Cursor model's cost on its own day's pricing", () => {
+    // The same model also appears on the unpriced 9th. Cursor's duplicates
+    // share their survivor's day, so the priced 8th still heals its cost;
+    // Devin CLI, whose duplicates can cross midnight, would keep it.
+    const plan = planParserHighWaterSubmission({
+      client,
+      incomingVersion: SUPPORTED_VERSIONED_PARSERS.cursor,
+      fullHistory: true,
+      existingLegacyDays: cursorSnapshot(cursorContribution("2026-10-08", 200, 2, 2)),
+      incomingDays: cursorSnapshot(
+        cursorContribution("2026-10-08", 100, 1, 1),
+        cursorContribution("2026-10-09", 50, 0, 1)
+      ),
+      recountProof: {
+        "2026-10-08": {
+          [modelId]: { previous: cursorProofCell(200, 2, 2), corrected: cursorProofCell(100, 1, 1) },
+        },
+        "2026-10-09": {
+          [modelId]: { previous: cursorProofCell(50, 0.5, 1), corrected: cursorProofCell(50, 0.5, 1) },
+        },
+      },
+      costIncompleteDates: new Set(["2026-10-09"]),
+    });
+
+    expect(plan.recountCostUnsafeModels).toBeUndefined();
+    expect(plan.nextState?.days["2026-10-08"]?.tokens).toBe(100);
+    expect(plan.nextState?.days["2026-10-08"]?.cost).toBeCloseTo(1, 4);
+  });
+
+  it("registers generation 2 while accepting generation 1 until transition", () => {
+    expect(SUPPORTED_VERSIONED_PARSERS.cursor).toBe(2);
+
+    const before = cursorPlan({
+      existing: inflated,
+      incoming: inflated,
+      incomingVersion: 1,
+    });
+    expect(before.mode).toBe("status-quo");
+    expect(before.nextState).toBeUndefined();
+
+    const pending = cursorPlan({
+      existing: inflated,
+      incoming: corrected,
+      fullHistory: false,
+      recountProof: proof,
+    }).nextState!;
+    const after = cursorPlan({
+      existing: corrected,
+      incoming: inflated,
+      incomingVersion: 1,
+      state: pending,
+      persistedVersion: 2,
+    });
+    expect(after.mode).toBe("freeze");
+    expect(after.nextState).toBeUndefined();
+  });
+
+  it("lowers an inflated cell from a full-history proof but never below corrected", () => {
+    const exact = cursorPlan({
+      existing: inflated,
+      incoming: corrected,
+      recountProof: proof,
+    });
+    expect(exact.mode).toBe("baseline-legacy");
+    expect(exact.recountDays).toEqual(["2026-10-08"]);
+    expect(exact.nextState?.days["2026-10-08"]?.tokens).toBe(400);
+    expect(exact.nextState?.days["2026-10-08"]?.cost).toBe(4);
+    expect(exact.nextState?.days["2026-10-08"]?.messages).toBe(1);
+
+    const alreadyBelow = cursorPlan({
+      existing: cursorSnapshot(
+        cursorContribution("2026-10-08", 350, 3.5, 1)
+      ),
+      incoming: corrected,
+      recountProof: proof,
+    });
+    expect(alreadyBelow.nextState?.days["2026-10-08"]?.tokens).toBe(400);
+    expect(alreadyBelow.nextState?.days["2026-10-08"]?.cost).toBe(4);
+    expect(alreadyBelow.nextState?.days["2026-10-08"]?.messages).toBe(1);
+  });
+
+  it("rejects a proof whose corrected side does not match the submitted cell", () => {
+    const mismatched = cursorPlan({
+      existing: inflated,
+      incoming: corrected,
+      recountProof: cursorProof(
+        cursorProofCell(1_000, 10, 4),
+        cursorProofCell(399, 4, 1)
+      ),
+    });
+
+    expect(mismatched.recountDays).toBeUndefined();
+    expect(mismatched.rejectedRecountDays).toEqual(["2026-10-08"]);
+    expect(mismatched.nextState?.days["2026-10-08"]?.tokens).toBe(1_000);
+  });
+
+  it("keeps a partial scan pending without applying its proof", () => {
+    const partial = cursorPlan({
+      existing: inflated,
+      incoming: corrected,
+      fullHistory: false,
+      recountProof: proof,
+    });
+
+    expect(partial.mode).toBe("freeze");
+    expect(partial.recountDays).toBeUndefined();
+    expect(partial.nextState?.baselineEstablished).toBe(false);
+
+    const followed = cursorPlan({
+      existing: inflated,
+      incoming: corrected,
+      state: partial.nextState,
+      recountProof: proof,
+    });
+    expect(followed.recountDays).toEqual(["2026-10-08"]);
+    expect(followed.nextState?.days["2026-10-08"]?.tokens).toBe(400);
+  });
+
+  it("keeps crediting new usage after local Cursor history shrinks", () => {
+    // `tokscale cursor logout` archives that account's cache and the scanner
+    // skips archives, so later scans no longer carry its days. The stored
+    // days stay, and new usage from the account still in use must count.
+    const stored = cursorSnapshot(
+      cursorContribution("2026-10-01", 5_000, 50, 10),
+      cursorContribution("2026-10-08", 400, 4, 1)
+    );
+    const transition = cursorPlan({ existing: stored, incoming: corrected });
+    expect(transition.mode).toBe("baseline-legacy");
+    expect(transition.nextState?.days["2026-10-01"]?.tokens).toBe(5_000);
+
+    const grown = cursorPlan({
+      existing: {},
+      incoming: cursorSnapshot(
+        cursorContribution("2026-10-08", 450, 4.5, 2),
+        cursorContribution("2026-10-09", 300, 3, 1)
+      ),
+      state: transition.nextState,
+    });
+    expect(grown.mode).toBe("incremental");
+    expect(grown.highWaterDeficit).toBeUndefined();
+    expect(grown.increments["2026-10-08"]?.tokens).toBe(50);
+    expect(grown.increments["2026-10-08"]?.messages).toBe(1);
+    expect(grown.increments["2026-10-09"]?.tokens).toBe(300);
+    expect(grown.nextState?.days["2026-10-01"]?.tokens).toBe(5_000);
+    expect(grown.nextState?.aggregate.tokens).toBe(5_750);
+  });
+
+  it("credits a day only up to its snapshot total when its model ids change", () => {
+    const stored = cursorSnapshot(cursorContribution("2026-10-08", 400, 4, 1));
+    const state = cursorPlan({ existing: stored, incoming: stored }).nextState!;
+    // The same day under another model id: per-model capacity alone would
+    // credit it a second time.
+    const renamed = foldParserClientSnapshot(
+      [
+        {
+          date: "2026-10-08",
+          clients: [
+            {
+              client,
+              modelId: "gemini-4-argon",
+              tokens: { input: 450, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+              cost: 4.5,
+              messages: 2,
+            },
+          ],
+        },
+      ],
+      client
+    );
+
+    const plan = cursorPlan({ existing: {}, incoming: renamed, state });
+    expect(plan.increments["2026-10-08"]?.tokens).toBe(50);
+    expect(plan.increments["2026-10-08"]?.messages).toBe(1);
+    expect(plan.nextState?.aggregate.tokens).toBe(450);
+  });
+
+  it("budgets a day from the normalized totals the route writes", () => {
+    // A legacy cell whose nested models (200) exceed its scalar total (100).
+    // The route adds increments to the normalized models, so a budget taken
+    // from the scalar would let the day end above the snapshot's 150.
+    const nested = cursorSnapshot(cursorContribution("2026-10-08", 200, 2, 2))["2026-10-08"];
+    const overRepresented: ClientBreakdownData = {
+      ...nested,
+      tokens: 100,
+      input: 100,
+      messages: 1,
+    };
+    const archived = cursorSnapshot(cursorContribution("2026-10-01", 1_000, 10, 4));
+    const renamed = foldParserClientSnapshot(
+      [
+        {
+          date: "2026-10-08",
+          clients: [
+            {
+              client,
+              modelId: "gemini-4-argon",
+              tokens: { input: 150, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+              cost: 1.5,
+              messages: 2,
+            },
+          ],
+        },
+      ],
+      client
+    );
+
+    const plan = cursorPlan({
+      existing: { ...archived, "2026-10-08": overRepresented },
+      incoming: renamed,
+    });
+    expect(plan.mode).toBe("baseline-legacy");
+    expect(plan.increments["2026-10-08"]).toBeUndefined();
+  });
+
+  it("zeroes a moved snapshot's earlier day only at the transition", () => {
+    // One event whose later snapshot carries the next day's timestamp. Real
+    // Cursor snapshots keep their event's timestamp (#1544); if one did not,
+    // generation 1 would count both days while the cache holds both rows, and
+    // the proof would show the earlier day's row as a duplicate.
+    const moved: ClientRecountProof = {
+      "2026-10-08": {
+        [modelId]: { previous: cursorProofCell(100, 1, 1), corrected: cursorProofCell(0, 0, 0) },
+      },
+      "2026-10-09": {
+        [modelId]: { previous: cursorProofCell(110, 1.1, 1), corrected: cursorProofCell(110, 1.1, 1) },
+      },
+    };
+    const day9 = cursorSnapshot(cursorContribution("2026-10-09", 110, 1.1, 1));
+
+    // At the transition both stored days hold generation-1 counts, so the
+    // proof zeroes the earlier one.
+    const transition = cursorPlan({
+      existing: {
+        ...cursorSnapshot(cursorContribution("2026-10-08", 100, 1, 1)),
+        ...day9,
+      },
+      incoming: day9,
+      recountProof: moved,
+    });
+    expect(transition.recountDays).toEqual(["2026-10-08", "2026-10-09"]);
+    expect(transition.nextState?.days["2026-10-08"]?.tokens ?? 0).toBe(0);
+    expect(transition.nextState?.days["2026-10-09"]?.tokens).toBe(110);
+
+    // After the transition a proof never lowers counts, so a snapshot that
+    // moves later is credited on both days, as the ordinary merge did.
+    const day8 = cursorSnapshot(cursorContribution("2026-10-08", 100, 1, 1));
+    const state = cursorPlan({ existing: day8, incoming: day8 }).nextState!;
+    const later = cursorPlan({ existing: {}, incoming: day9, state, recountProof: moved });
+    expect(later.recountTransition).toBeUndefined();
+    expect(later.nextState?.days["2026-10-08"]?.tokens).toBe(100);
+    expect(later.nextState?.days["2026-10-09"]?.tokens).toBe(110);
+    expect(later.nextState?.aggregate.tokens).toBe(210);
+  });
+
+  it("keeps an empty full-history snapshot pending", () => {
+    const empty = cursorPlan({ existing: inflated, incoming: {} });
+
+    expect(empty.mode).toBe("freeze");
+    expect(empty.nextState?.baselineEstablished).toBe(false);
+
+    const followed = cursorPlan({
+      existing: inflated,
+      incoming: corrected,
+      state: empty.nextState,
+      recountProof: proof,
+    });
+    expect(followed.recountDays).toEqual(["2026-10-08"]);
+    expect(followed.nextState?.days["2026-10-08"]?.tokens).toBe(400);
+  });
+});
+
 describe("per-client full-history scope", () => {
   it("freezes only clients omitted from a new completeness declaration", () => {
     const scope = {
@@ -2627,5 +2996,171 @@ describe("unverified retention floor", () => {
     });
     expect(plan.mode).toBe("freeze");
     expect(plan.increments).toEqual({});
+  });
+});
+
+describe("Cursor legacy tokenless cost allocation", () => {
+  const date = "2025-04-15";
+  function snapshot(
+    rows: Array<{
+      date?: string;
+      modelId?: string;
+      tokens?: number;
+      messages: number;
+      cost: number;
+    }>,
+    client = "cursor",
+  ) {
+    return foldParserClientSnapshot(
+      rows.map((row) => ({
+        date: row.date ?? date,
+        clients: [{
+          client,
+          modelId: row.modelId ?? "premium-tool-call",
+          tokens: {
+            input: row.tokens ?? 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            reasoning: 0,
+          },
+          messages: row.messages,
+          cost: row.cost,
+        }],
+      })),
+      client,
+    );
+  }
+  function plan(
+    stored: Record<string, ClientBreakdownData>,
+    incoming: Record<string, ClientBreakdownData>,
+    state?: ParserClientHighWaterState,
+    client = "cursor",
+  ) {
+    return planParserHighWaterSubmission({
+      client,
+      incomingVersion: SUPPORTED_VERSIONED_PARSERS[client],
+      fullHistory: true,
+      existingLegacyDays: stored,
+      incomingDays: incoming,
+      state,
+    });
+  }
+
+  it("credits a newly discovered tokenless day's cost once", () => {
+    const stored = snapshot([{
+      date: "2026-10-25",
+      modelId: "gpt-4o",
+      tokens: 100,
+      messages: 1,
+      cost: 1,
+    }]);
+    const incoming = { ...stored, ...snapshot([{ messages: 1, cost: 0.02 }]) };
+    const baseline = plan({}, stored);
+    const next = plan(stored, incoming, baseline.nextState);
+    expect(next.mode).toBe("incremental");
+    expect(next.increments[date]?.tokens).toBe(0);
+    expect(next.increments[date]?.messages).toBe(1);
+    expect(next.increments[date]?.cost).toBeCloseTo(0.02, 4);
+    expect(next.nextState?.days[date]?.cost).toBeCloseTo(0.02, 4);
+    const replay = plan(next.nextState!.days, incoming, next.nextState);
+    expect(replay.mode).toBe("incremental");
+    expect(replay.increments).toEqual({});
+    expect(replay.nextState?.days[date]?.cost).toBeCloseTo(0.02, 4);
+  });
+
+  it("credits new tokenless cost during a preserving legacy transition", () => {
+    const stored = snapshot([{ date: "2025-04-14", messages: 1, cost: 0.02 }]);
+    const incoming = { ...stored, ...snapshot([{ messages: 1, cost: 0.03 }]) };
+    const next = plan(stored, incoming);
+    expect(next.mode).toBe("baseline-legacy");
+    expect(next.increments[date]?.cost).toBeCloseTo(0.03, 4);
+    expect(next.nextState?.days["2025-04-14"]?.cost).toBeCloseTo(0.02, 4);
+    const replay = plan(next.nextState!.days, incoming, next.nextState);
+    expect(replay.mode).toBe("incremental");
+    expect(replay.increments).toEqual({});
+    expect(replay.nextState?.days[date]?.cost).toBeCloseTo(0.03, 4);
+  });
+
+  it("bounds tokenless spend by the fraction of messages the day can credit", () => {
+    const stored = snapshot([
+      { messages: 1, cost: 1 },
+      { modelId: "gpt-4o", tokens: 100, messages: 1, cost: 1 },
+    ]);
+    const baseline = plan({}, stored);
+    const incoming = snapshot([{ messages: 3, cost: 3 }]);
+    const next = plan(stored, incoming, baseline.nextState);
+    // Two new premium calls are reported, but only one net new message can be
+    // proved for the day after the other model disappears: credit half of $2.
+    expect(next.increments[date]?.messages).toBe(1);
+    expect(next.increments[date]?.cost).toBeCloseTo(1, 4);
+    expect(next.nextState?.days[date]?.cost).toBeCloseTo(3, 4);
+    const replay = plan(next.nextState!.days, incoming, next.nextState);
+    expect(replay.mode).toBe("incremental");
+    expect(replay.increments).toEqual({});
+  });
+
+  it.each([
+    { client: "cursor", modelId: "auto" },
+    { client: "devin-cli", modelId: "premium-tool-call" },
+  ])(
+    "does not authorize tokenless cost for $client/$modelId",
+    ({ client, modelId }) => {
+      const stored = snapshot([{ modelId, messages: 1, cost: 1 }], client);
+      const baseline = plan({}, stored, undefined, client);
+      const next = plan(
+        stored,
+        snapshot([{ modelId, messages: 2, cost: 2 }], client),
+        baseline.nextState,
+        client,
+      );
+      expect(next.increments[date]?.messages).toBe(1);
+      expect(next.increments[date]?.cost).toBe(0);
+    },
+  );
+
+  it("does not authorize cost for repricing or rejected message growth", () => {
+    const stored = snapshot([{ messages: 2, cost: 1 }]);
+    const baseline = plan({}, stored);
+    for (const messages of [1, 2]) {
+      const next = plan(
+        stored,
+        snapshot([{ messages, cost: 2 }]),
+        baseline.nextState,
+      );
+      expect(next.mode).toBe("incremental");
+      expect(next.increments).toEqual({});
+      expect(next.nextState?.days[date]?.cost).toBe(1);
+    }
+  });
+
+  it("does not apply the tokenless exception to a previously token-bearing cell", () => {
+    const stored = snapshot([{ tokens: 100, messages: 1, cost: 1 }]);
+    const baseline = plan({}, stored);
+    const next = plan(
+      stored,
+      snapshot([{ messages: 2, cost: 2 }]),
+      baseline.nextState,
+    );
+    expect(next.increments[date]?.messages).toBe(1);
+    expect(next.increments[date]?.cost).toBe(0);
+  });
+
+  it("still prices token-bearing growth by accepted tokens rather than messages", () => {
+    const stored = snapshot([
+      { modelId: "gpt-4o", tokens: 100, messages: 1, cost: 1 },
+      { modelId: "other", tokens: 100, messages: 1, cost: 1 },
+    ]);
+    const baseline = plan({}, stored);
+    const next = plan(
+      stored,
+      snapshot([{ modelId: "gpt-4o", tokens: 250, messages: 2, cost: 4 }]),
+      baseline.nextState,
+    );
+    // One third of the model's 150-token capacity fits the day's 50-token
+    // budget; no message fits. The $3 marginal cost must still credit $1.
+    expect(next.increments[date]?.tokens).toBe(50);
+    expect(next.increments[date]?.messages).toBe(0);
+    expect(next.increments[date]?.cost).toBeCloseTo(1, 4);
   });
 });
