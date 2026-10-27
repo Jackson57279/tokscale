@@ -113,34 +113,49 @@ const RECOUNT_PROOF_CLIENTS: ReadonlySet<string> = new Set([
 
 /**
  * Recounting clients whose generations only drop rows the previous generation
- * counted and never move usage to another day: Cursor generation 2 keeps one
+ * counted and never move usage to another day. Cursor generation 2 keeps one
  * snapshot of each event, on a day where generation 1 already counted it.
+ * Devin CLI generation 2 keeps the first persisted copy of each request,
+ * dated by that row's own write time, as generation 1 dated it too.
  *
  * The lifetime budget below exists so that usage a generation re-dates cannot
- * be credited twice. Under it, history that leaves the local scan
- * (`tokscale cursor logout` archives that account's cache, and the scanner
- * skips archives) would stop every later token from counting until the
- * archived total was earned again. These clients budget growth per day
- * instead: a day's token and message totals may rise to the snapshot's totals
- * for that day and never above them, as they could under the ordinary per-day
- * merge before registration. Costs and token buckets are attributed as for
- * every versioned client, and only the recount proof at the device's
- * transition lowers a stored day.
+ * be credited twice. Under it, history that leaves the local scan would stop
+ * every later token from counting until the missing total was earned again:
+ * `tokscale cursor logout` archives that account's cache and the scanner
+ * skips archives, and Devin CLI deletes `message_nodes` rows outright. These
+ * clients budget growth per day instead: a day's token and message totals may
+ * rise to the snapshot's totals for that day and never above them, as they
+ * could under the ordinary per-day merge before registration. Costs and token
+ * buckets are attributed as for every versioned client, and only a recount
+ * proof lowers a stored day.
  *
- * This relies on each Cursor event keeping its timestamp across snapshots, as
- * the snapshots of a real profile do (#1544). An event whose later snapshot
- * moved to another day after the transition would be credited on both days,
- * as the ordinary per-day merge did.
- *
- * The same assumption puts every duplicate snapshot on its survivor's day, so
- * a recount proof moves a Cursor model's cost on that day's own pricing,
- * whatever other days hold (`recountCostUnsafeModels`). A model the proof
- * shows with no survivor on some day contradicts that for itself and still
- * waits while any proof day is unpriced, as for every client. An event whose
- * snapshots moved only in part cannot be told apart; if its survivor's day is
- * unpriced, the moved snapshot's cost can be dropped with it.
+ * This relies on each record keeping its day across scans. Real Cursor
+ * snapshots keep their event's timestamp (#1544). A Devin CLI request keeps
+ * its day while its first copy exists, and in a real database no surviving
+ * request had lost its first copy while a later compaction copy remained. A
+ * record that moved to another day after the transition would be credited on
+ * both days, as the ordinary per-day merge did.
  */
-const PER_DAY_GROWTH_CLIENTS: ReadonlySet<string> = new Set(["cursor"]);
+const PER_DAY_GROWTH_CLIENTS: ReadonlySet<string> = new Set([
+  "cursor",
+  "devin-cli",
+]);
+
+/**
+ * Recounting clients whose duplicates all sit on their survivor's day, so a
+ * recount proof moves a model's cost on that day's own pricing, whatever
+ * other days hold (`recountCostUnsafeModels`). Every snapshot of one Cursor
+ * event carries the event's timestamp. Devin CLI does not qualify: a
+ * compaction copy of a request is written when the session is compacted,
+ * often on a later day than the request.
+ *
+ * A model the proof shows with no survivor on some day contradicts that for
+ * itself and still waits while any proof day is unpriced, as for every
+ * client. An event whose snapshots moved only in part cannot be told apart;
+ * if its survivor's day is unpriced, the moved snapshot's cost can be dropped
+ * with it.
+ */
+const SAME_DAY_DUPLICATE_CLIENTS: ReadonlySet<string> = new Set(["cursor"]);
 
 /** One (day, model) cell as a parser generation counts it. */
 export interface RecountProofCell {
@@ -1595,7 +1610,7 @@ export function planParserHighWaterSubmission(args: {
         proof,
         recount,
         costIncompleteDates,
-        PER_DAY_GROWTH_CLIENTS.has(args.client)
+        SAME_DAY_DUPLICATE_CLIENTS.has(args.client)
       )
     : new Set<string>();
   const correctLedger = (
