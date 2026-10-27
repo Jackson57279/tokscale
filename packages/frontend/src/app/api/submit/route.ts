@@ -1216,6 +1216,10 @@ export async function POST(request: Request) {
               submitted,
               {
                 transition: plan.recountTransition === true,
+                residueModels: ownValue(
+                  plan.residueDays ?? {},
+                  incomingDay.date
+                ),
                 costIsComplete: incomingCostIsComplete,
                 storedCostIsFloor: stored.provenance?.costIsComplete === false,
                 costUnsafeModels: new Set(plan.recountCostUnsafeModels ?? []),

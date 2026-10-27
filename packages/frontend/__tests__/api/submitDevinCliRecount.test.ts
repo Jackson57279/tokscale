@@ -681,7 +681,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
     expect(store.device.parserVersions["devin-cli"]).toBe(2);
   });
 
-  it("keeps stored usage from a source the scan could not read", async () => {
+  it("keeps stored usage from a source the scan could not read until the proof covers it", async () => {
     // Two Devin databases fed the stored day: A = 400 tokens of which 50 are
     // duplicate rows, B = 600. Generation 2 reads A while B is gone, so the
     // payload carries 350 for the date and the proof explains only 400 of the
@@ -701,17 +701,18 @@ describe("POST /api/submit devin-cli recount proof", () => {
     }
 
     // B is readable again (with 60 duplicates of its own), so the proof now
-    // covers both databases. The device is past its transition, and a later
-    // proof never lowers counts: the day stays as stored.
+    // covers both databases: its previous side equals the stored cell
+    // exactly, while the observed snapshot only ever held A's 350. The cell
+    // is still in generation-1 units, so the residue is corrected to 890 —
+    // the same result a transition that reads both databases produces.
     const bothDatabases = () =>
       submissionBody([
         { date: "2026-10-08", tokens: 890, cost: 0.89, previous: { tokens: 1_000, cost: 1 } },
       ]);
     await submit(store, bothDatabases());
-    expect(storedClientTokens(store, "2026-10-08", "devin-cli")).toBe(1_000);
-    expect(storedCost(store)).toBeCloseTo(1, 4);
+    expect(storedClientTokens(store, "2026-10-08", "devin-cli")).toBe(890);
+    expect(storedCost(store)).toBeCloseTo(0.89, 4);
 
-    // A device whose transition reads both databases heals the day then.
     const healed = newStore();
     seedDay(healed, "2026-10-08", { "devin-cli": recountCell(1_000, 1) });
     await submit(healed, bothDatabases());

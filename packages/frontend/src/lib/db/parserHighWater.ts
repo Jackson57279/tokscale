@@ -191,6 +191,15 @@ export interface ParserAggregateHighWater {
   inputIncludingCacheRead: number;
 }
 
+/**
+ * Day -> models whose stored cells are still in a previous parser
+ * generation's units: cells a recounting generation's transition kept
+ * because its proof could not describe them, plus cells inherited from a
+ * pre-`stateVersion` ledger. A matching recount proof may still correct
+ * them; see `applyRecountProofToCell`.
+ */
+export type ResidueDays = Record<string, Record<string, true>>;
+
 export interface ParserClientHighWaterState {
   /** Server-side allocation-state schema; absent identifies the legacy envelope. */
   stateVersion?: number;
@@ -202,6 +211,7 @@ export interface ParserClientHighWaterState {
   days: Record<string, ClientBreakdownData>;
   /** Last complete parser snapshot, used only to locate the next positive delta. */
   observedDays?: Record<string, ClientBreakdownData>;
+  residueDays?: ResidueDays;
 }
 
 export type DeviceParserStates = Record<string, ParserClientHighWaterState>;
@@ -245,8 +255,9 @@ export interface ParserHighWaterPlan {
   recountDays?: string[];
   /**
    * Set on the device's transition to the recounting generation, the one
-   * submit whose proof may correct counts. A later proof can only restate a
-   * floored cost.
+   * submit whose proof may correct counts unconditionally. A later proof
+   * corrects only cells still marked as previous-generation residue
+   * (`residueDays`) and can otherwise only restate a floored cost.
    */
   recountTransition?: boolean;
   /**
@@ -255,6 +266,13 @@ export interface ParserHighWaterPlan {
    * `applyRecountProofToCell` as the planner did.
    */
   recountCostUnsafeModels?: string[];
+  /**
+   * Stored models still in the previous generation's units, as consulted
+   * during this submit's recount corrections. `nextState.residueDays`
+   * persists what survives it; the route passes the same set to
+   * `applyRecountProofToCell`.
+   */
+  residueDays?: ResidueDays;
   /** Days whose recount proof disagreed with the snapshot and was ignored. */
   rejectedRecountDays?: string[];
   nextState?: ParserClientHighWaterState;
@@ -649,15 +667,26 @@ export interface RecountCorrection {
    * route tags the cell, and a later complete proof restates it.
    */
   costDeferred: boolean;
+  /** Models whose counts the proof corrected, now in this generation's units. */
+  recounted: string[];
 }
 
 /** What `applyRecountProofToCell` needs to know about the submit. */
 export interface RecountProofContext {
   /**
    * The device's transition to the recounting generation: the one submit
-   * whose proof may correct counts.
+   * whose proof may correct counts unconditionally on a `previous` match.
    */
   transition: boolean;
+  /**
+   * The day's models whose stored cells are still in the previous
+   * generation's units (`residueDays` in the v2 parser state): cells the
+   * transition could not prove and therefore kept. A `previous` match on a
+   * residue model corrects it; a match on any other model is a coincidence —
+   * a disappearing source can make `previous` land on a corrected cell's
+   * counts exactly — and the cell is kept.
+   */
+  residueModels?: Record<string, true>;
   /** Whether this snapshot priced every token it counted on the day. */
   costIsComplete: boolean;
   /**
@@ -690,11 +719,16 @@ export interface RecountProofContext {
  * corrected counts must equal the submitted cell
  * (`recountProofDayMatchesSnapshot`).
  *
- * After the transition a stored cell is in this generation's units, and the
- * receiver keeps no record of which rows it came from. Matching counts prove
- * nothing then: when one of two sources disappears, the remaining source's
- * previous count can equal the corrected day exactly, and lowering the day
- * would erase the other source. So a later proof never changes counts.
+ * After the transition a stored cell is normally in this generation's
+ * units, and matching counts alone prove nothing: when one of two sources
+ * disappears, the remaining source's previous count can equal the corrected
+ * day exactly, and lowering the day would erase the other source. The state
+ * records which cells the transition left unproven (`residueDays`); a later
+ * proof may lower counts only on those residue cells. A residue cell that
+ * takes growth keeps its mark — the proof counts the new rows on both
+ * sides, so `stored == previous` still means the cell tracks the previous
+ * generation's count — and a model drops out of the set only when a recount
+ * lands, after which no later proof may touch its counts again.
  *
  * Cost changes only on a complete snapshot, and only where the proof's
  * corrected cost is the cost the snapshot submitted for the model and the
@@ -723,12 +757,15 @@ export function applyRecountProofToCell(
   const models = modelsForHighWater(stored);
   const submittedModels = submittedModelsOf(submitted);
   const removed = { tokens: 0, cost: 0, messages: 0 };
+  const recounted: string[] = [];
   let changed = false;
   let costDeferred = false;
   for (const [modelId, entry] of Object.entries(proofDay)) {
     const model = ownValue(models, modelId);
     if (!model || !proofCellIsOrdered(entry)) continue;
-    const recount = context.transition && modelCountsEqual(model, entry.previous);
+    const recount =
+      modelCountsEqual(model, entry.previous) &&
+      (context.transition || ownValue(context.residueModels ?? {}, modelId) === true);
     const pricingVouches =
       context.costIsComplete &&
       !context.costUnsafeModels.has(modelId) &&
@@ -749,6 +786,7 @@ export function applyRecountProofToCell(
     if (!recount && !restatesFloor) continue;
     const next = { ...model };
     if (recount) {
+      recounted.push(modelId);
       const priorInclusiveInput = positive(
         model.inputIncludingCacheRead ?? model.input + model.cacheRead
       );
@@ -795,6 +833,7 @@ export function applyRecountProofToCell(
     changed,
     costProven: recountProofProvesCost(cell, proofDay, submitted),
     costDeferred,
+    recounted,
   };
 }
 
@@ -802,6 +841,13 @@ function modelCountsEqual(model: ModelBreakdownData, side: RecountProofCell): bo
   return (
     PROOF_TOKEN_FIELDS.every((field) => model[field] === side.tokens[field]) &&
     model.messages === side.messages
+  );
+}
+
+function modelCountsMatch(a: ModelBreakdownData, b: ModelBreakdownData): boolean {
+  return (
+    PROOF_TOKEN_FIELDS.every((field) => a[field] === b[field]) &&
+    a.messages === b.messages
   );
 }
 
@@ -867,6 +913,11 @@ interface RecountDaysContext {
   costIncompleteDates: ReadonlySet<string>;
   /** The stored rows, whose floor tags decide `storedCostIsFloor`. */
   storedDays: Record<string, ClientBreakdownData>;
+  /**
+   * Stored models still in the previous generation's units; post-transition
+   * recounts may correct only these.
+   */
+  residueDays?: Record<string, Record<string, true>>;
   costUnsafeModels: ReadonlySet<string>;
 }
 
@@ -875,24 +926,122 @@ function applyRecountProofToDays(
   proof: ClientRecountProof,
   dates: readonly string[],
   context: RecountDaysContext
-): Record<string, ClientBreakdownData> {
+): { days: Record<string, ClientBreakdownData>; recounted: RecountedCells } {
   const next = normalizeStateDays(days);
+  const recounted = createSafeRecord<Record<string, true>>();
   for (const date of dates) {
     const stored = ownValue(next, date);
     const proofDay = ownValue(proof, date);
     if (!stored || !proofDay) continue;
-    next[date] = applyRecountProofToCell(
+    const result = applyRecountProofToCell(
       stored,
       proofDay,
       ownValue(context.submittedDays, date),
       {
         transition: context.transition,
+        residueModels: ownValue(context.residueDays ?? {}, date),
         costIsComplete: !context.costIncompleteDates.has(date),
         storedCostIsFloor:
           ownValue(context.storedDays, date)?.provenance?.costIsComplete === false,
         costUnsafeModels: context.costUnsafeModels,
       }
-    ).cell;
+    );
+    next[date] = result.cell;
+    if (result.recounted.length > 0) {
+      recounted[date] = Object.fromEntries(
+        result.recounted.map((modelId) => [modelId, true as const])
+      );
+    }
+  }
+  return { days: next, recounted };
+}
+
+/** `recounted` is a `ResidueDays`-shaped set of cells a proof just corrected. */
+type RecountedCells = ResidueDays;
+
+/** Every model of every stored cell (a pre-`stateVersion` ledger is all residue). */
+function allModelsResidue(days: Record<string, ClientBreakdownData>): ResidueDays {
+  const residue = createSafeRecord<Record<string, true>>();
+  for (const [date, cell] of Object.entries(days)) {
+    residue[date] = Object.fromEntries(
+      Object.keys(modelsForHighWater(cell)).map((modelId) => [modelId, true as const])
+    );
+  }
+  return residue;
+}
+
+/**
+ * Marks for a v2 state written before `residueDays` existed: a stored cell
+ * equal to the last snapshot's cell was credited in this generation's units;
+ * one that diverges was never corrected and is still previous-generation
+ * residue. A cell the last snapshot does not date is kept unmarked rather
+ * than risk deleting usage whose source simply went unread.
+ */
+function inferResidueDays(
+  days: Record<string, ClientBreakdownData>,
+  observedDays: Record<string, ClientBreakdownData> | undefined
+): ResidueDays {
+  const residue = createSafeRecord<Record<string, true>>();
+  for (const [date, cell] of Object.entries(days)) {
+    const observed = ownValue(observedDays ?? {}, date);
+    if (!observed) continue;
+    const observedModels = modelsForHighWater(observed);
+    const marked = Object.fromEntries(
+      Object.entries(modelsForHighWater(cell))
+        .filter(([modelId, model]) => {
+          const observedModel = ownValue(observedModels, modelId);
+          return observedModel !== undefined && !modelCountsMatch(model, observedModel);
+        })
+        .map(([modelId]) => [modelId, true as const])
+    );
+    if (Object.keys(marked).length > 0) residue[date] = marked;
+  }
+  return residue;
+}
+
+/**
+ * The cells a transition's proof could not prove: every stored model the
+ * proof does not name, whose counts match neither `previous` nor
+ * `corrected`. Those stay in the previous generation's units and remain
+ * correctable by later proofs; proven cells never are again.
+ */
+function unprovenResidue(
+  days: Record<string, ClientBreakdownData>,
+  proof: ClientRecountProof | undefined,
+  acceptedDays: ReadonlySet<string>
+): ResidueDays {
+  const residue = createSafeRecord<Record<string, true>>();
+  for (const [date, cell] of Object.entries(days)) {
+    const proofDay = ownValue(proof ?? {}, date);
+    const marked = Object.fromEntries(
+      Object.entries(modelsForHighWater(cell))
+        .filter(([modelId, model]) => {
+          const entry = ownValue(proofDay ?? {}, modelId);
+          return !(
+            acceptedDays.has(date) &&
+            entry !== undefined &&
+            proofCellIsOrdered(entry) &&
+            (modelCountsEqual(model, entry.previous) ||
+              modelCountsEqual(model, entry.corrected))
+          );
+        })
+        .map(([modelId]) => [modelId, true as const])
+    );
+    if (Object.keys(marked).length > 0) residue[date] = marked;
+  }
+  return residue;
+}
+
+/** Remove the cells a recount just corrected from the residue set. */
+function residueMinus(residue: ResidueDays, recounted: RecountedCells): ResidueDays {
+  const next = createSafeRecord<Record<string, true>>();
+  for (const [date, models] of Object.entries(residue)) {
+    const kept = Object.fromEntries(
+      Object.keys(models)
+        .filter((modelId) => ownValue(recounted[date] ?? {}, modelId) !== true)
+        .map((modelId) => [modelId, true as const])
+    );
+    if (Object.keys(kept).length > 0) next[date] = kept;
   }
   return next;
 }
@@ -966,7 +1115,8 @@ function stateAfterCreditedIncrements(
   version: number,
   previousDays: Record<string, ClientBreakdownData>,
   increments: Record<string, ClientBreakdownData>,
-  observedDays: Record<string, ClientBreakdownData>
+  observedDays: Record<string, ClientBreakdownData>,
+  residueDays?: ResidueDays
 ): ParserClientHighWaterState {
   const days = applyCreditedIncrements(previousDays, increments);
   return {
@@ -976,6 +1126,9 @@ function stateAfterCreditedIncrements(
     aggregate: aggregateSnapshot(days),
     days,
     observedDays: normalizeStateDays(observedDays),
+    // Persist even when empty: an absent field marks a pre-residue state and
+    // triggers inference on the next submit.
+    ...(residueDays !== undefined ? { residueDays } : {}),
   };
 }
 
@@ -1447,17 +1600,19 @@ export function planParserHighWaterSubmission(args: {
     : new Set<string>();
   const correctLedger = (
     days: Record<string, ClientBreakdownData>,
-    transition: boolean
-  ): Record<string, ClientBreakdownData> =>
+    transition: boolean,
+    residueDays?: ResidueDays
+  ): { days: Record<string, ClientBreakdownData>; recounted: RecountedCells } =>
     proof && recount.accepted.length > 0
       ? applyRecountProofToDays(days, proof, recount.accepted, {
           transition,
           submittedDays: args.incomingDays,
           costIncompleteDates,
           storedDays: args.existingLegacyDays,
+          residueDays,
           costUnsafeModels,
         })
-      : days;
+      : { days, recounted: createSafeRecord<Record<string, true>>() };
   const recountFields = {
     ...(recount.accepted.length > 0 ? { recountDays: recount.accepted } : {}),
     ...(recount.rejected.length > 0
@@ -1470,7 +1625,13 @@ export function planParserHighWaterSubmission(args: {
   if (args.state == null || args.state.baselineEstablished === false) {
     // Every stored cell still holds what the previous generation counted, so
     // this is the one submit whose proof may correct counts.
-    const existingLegacyDays = correctLedger(args.existingLegacyDays, true);
+    const { days: existingLegacyDays } = correctLedger(
+      args.existingLegacyDays,
+      true
+    );
+    const residueDays = RECOUNT_PROOF_CLIENTS.has(args.client)
+      ? unprovenResidue(args.existingLegacyDays, proof, new Set(recount.accepted))
+      : undefined;
     const legacyAggregate = aggregateSnapshot(existingLegacyDays);
     // Whether the device stored anything is judged before the proof: a stored
     // row the proof empties entirely still has to be corrected by the route,
@@ -1526,7 +1687,8 @@ export function planParserHighWaterSubmission(args: {
           supportedVersion,
           existingLegacyDays,
           increments,
-          args.incomingDays
+          args.incomingDays,
+          residueDays
         )
       : {
           stateVersion: PARSER_HIGH_WATER_STATE_VERSION,
@@ -1535,6 +1697,7 @@ export function planParserHighWaterSubmission(args: {
           aggregate: incomingAggregate,
           days: normalizeStateDays(args.incomingDays),
           observedDays: normalizeStateDays(args.incomingDays),
+          ...(residueDays !== undefined ? { residueDays } : {}),
         };
     return {
       mode: hasLegacy ? "baseline-legacy" : "baseline-new",
@@ -1548,18 +1711,33 @@ export function planParserHighWaterSubmission(args: {
   // maximum and advanced its aggregate even when no cell could accept that
   // growth. Rebuild that one-time migration baseline from the rows that were
   // actually credited, otherwise already-suppressed usage remains lost.
-  // After the transition a proof can only restate a floored cost (see
-  // `applyRecountProofToCell`), so the counts behind the aggregate stand.
-  const previousCreditedDays = correctLedger(
+  // Past the transition a proof may still correct the cells the transition
+  // left unproven (`residueDays`); every other stored cell is in this
+  // generation's units, where a `previous` match proves nothing (see
+  // `applyRecountProofToCell`). A pre-v2 state predates recounts entirely —
+  // every credited cell is residue. A v2 state written before the set was
+  // tracked infers it once from the cells its last snapshot disagrees with.
+  const residueDays = !RECOUNT_PROOF_CLIENTS.has(args.client)
+    ? undefined
+    : args.state.stateVersion === PARSER_HIGH_WATER_STATE_VERSION
+      ? args.state.residueDays ??
+        inferResidueDays(args.state.days, args.state.observedDays)
+      : allModelsResidue(args.existingLegacyDays);
+  const corrected = correctLedger(
     args.state.stateVersion === PARSER_HIGH_WATER_STATE_VERSION
       ? args.state.days
       : args.existingLegacyDays,
-    false
+    false,
+    residueDays
   );
-  const previousAggregate =
-    args.state.stateVersion === PARSER_HIGH_WATER_STATE_VERSION
-      ? args.state.aggregate
-      : aggregateSnapshot(previousCreditedDays);
+  const previousCreditedDays = corrected.days;
+  const remainingResidue = residueDays
+    ? residueMinus(residueDays, corrected.recounted)
+    : undefined;
+  // The corrected ledger, not the persisted aggregate: a residue correction
+  // lowers it, and the deficit and growth budget must see the same baseline
+  // `nextState` recomputes.
+  const previousAggregate = aggregateSnapshot(previousCreditedDays);
   const previousObservedDays =
     args.state.stateVersion === PARSER_HIGH_WATER_STATE_VERSION
       ? args.state.observedDays!
@@ -1596,8 +1774,16 @@ export function planParserHighWaterSubmission(args: {
       supportedVersion,
       previousCreditedDays,
       increments,
-      args.incomingDays
+      args.incomingDays,
+      remainingResidue
     ),
+    // The residue set in effect for this submit's corrections, so the route
+    // applies `applyRecountProofToCell` to the stored cells the same way.
+    ...(residueDays !== undefined &&
+    recount.accepted.length > 0 &&
+    Object.keys(residueDays).length > 0
+      ? { residueDays }
+      : {}),
     ...recountFields,
   };
 }

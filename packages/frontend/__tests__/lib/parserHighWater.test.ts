@@ -1746,11 +1746,13 @@ describe("devin-cli recount proof", () => {
     }
   });
 
-  it("keeps a day the transition could not correct when the missing source is read again", () => {
+  it("corrects a day the transition could not correct when the missing source is read again", () => {
     // Continuing from the A-only scan above (ledger kept at 1,000): B becomes
-    // readable and carries 60 duplicates of its own. The proof now explains
-    // the whole stored cell, but the device is past its transition, so a
-    // proof no longer lowers counts and the day stays as stored.
+    // readable and carries 110 duplicates of its own. The proof now explains
+    // the whole stored cell — its previous side equals it exactly — and the
+    // cell was never credited in this generation's units (the observed
+    // snapshot holds only A's 350), so the residue is still lowered to the
+    // corrected count.
     const stored = devinSnapshot(devinContribution("2026-10-08", 1_000));
     const first = devinPlan(stored, devinSnapshot(devinContribution("2026-10-08", 350)), {
       recountProof: proof({
@@ -1769,15 +1771,134 @@ describe("devin-cli recount proof", () => {
     expect(second.mode).toBe("incremental");
     expect(second.recountDays).toEqual(["2026-10-08"]);
     expect(second.recountTransition).toBeUndefined();
-    expect(second.nextState?.days["2026-10-08"]?.tokens).toBe(1_000);
-    expect(second.nextState?.aggregate.tokens).toBe(1_000);
+    expect(second.nextState?.days["2026-10-08"]?.tokens).toBe(890);
+    expect(second.nextState?.aggregate.tokens).toBe(890);
 
-    // A transition that reads both sources corrects the day then.
+    // A transition that reads both sources corrects the day the same way.
     const transition = devinPlan(stored, devinSnapshot(devinContribution("2026-10-08", 890)), {
       recountProof: bothSources,
     });
     expect(transition.recountTransition).toBe(true);
     expect(transition.nextState?.days["2026-10-08"]?.tokens).toBe(890);
+  });
+
+  it("clears the high-water deficit once residue is corrected, crediting new usage", () => {
+    // Stored 1,000 under generation 1 (400 = A with 50 dupes, 600 = B). The
+    // transition-era scan read only A, so the cell stayed. Now the snapshot
+    // reads both sources and reports 100 tokens of genuinely new usage on a
+    // later day. Without the correction the credited 1,000 would exceed the
+    // incoming 990 and freeze the new day's growth behind the deficit.
+    const stored = devinSnapshot(devinContribution("2026-10-08", 1_000));
+    const first = devinPlan(stored, devinSnapshot(devinContribution("2026-10-08", 350)), {
+      recountProof: proof({
+        "2026-10-08": { previous: proofCell(400), corrected: proofCell(350) },
+      }),
+    });
+
+    const second = devinPlan(
+      {},
+      devinSnapshot(
+        devinContribution("2026-10-08", 890),
+        devinContribution("2026-10-09", 100)
+      ),
+      {
+        state: first.nextState,
+        recountProof: proof({
+          "2026-10-08": { previous: proofCell(1_000), corrected: proofCell(890) },
+        }),
+      }
+    );
+
+    expect(second.highWaterDeficit).toBeUndefined();
+    expect(second.nextState?.days["2026-10-08"]?.tokens).toBe(890);
+    expect(second.increments["2026-10-09"]?.tokens).toBe(100);
+    expect(second.nextState?.days["2026-10-09"]?.tokens).toBe(100);
+    expect(second.nextState?.aggregate.tokens).toBe(990);
+  });
+
+  it("infers residue on a v2 state written before the set was tracked", () => {
+    // The credited day (1,000) was never corrected — the last snapshot held
+    // only A's 350 — so the divergence marks the cell as residue and the
+    // proof that now covers both sources heals it post-transition.
+    const stored = devinSnapshot(devinContribution("2026-10-08", 1_000));
+    const first = devinPlan(stored, devinSnapshot(devinContribution("2026-10-08", 350)), {
+      recountProof: proof({
+        "2026-10-08": { previous: proofCell(400), corrected: proofCell(350) },
+      }),
+    });
+    const legacyState = { ...first.nextState! } as ParserClientHighWaterState;
+    delete legacyState.residueDays;
+
+    const second = devinPlan({}, devinSnapshot(devinContribution("2026-10-08", 890)), {
+      state: legacyState,
+      recountProof: proof({
+        "2026-10-08": { previous: proofCell(1_000), corrected: proofCell(890) },
+      }),
+    });
+
+    expect(second.nextState?.days["2026-10-08"]?.tokens).toBe(890);
+    expect(second.nextState?.residueDays).toEqual({});
+  });
+
+  it("keeps a cell equal to its last snapshot from inference marks", () => {
+    // A baseline-new state credited 200 from A and B under this generation.
+    // Without a residue set, inference must not mark it: A's later proof can
+    // count the same 200 under generation 1 after B disappears, and lowering
+    // the day would erase B's usage.
+    const state = {
+      ...devinPlan(
+        {},
+        devinSnapshot(devinContribution("2026-10-08", 200, "swe-2-high", 0, 2))
+      ).nextState!,
+    } as ParserClientHighWaterState;
+    delete state.residueDays;
+
+    const afterDelete = devinPlan(
+      {},
+      devinSnapshot(devinContribution("2026-10-08", 100, "swe-2-high", 0, 1)),
+      {
+        state,
+        recountProof: proof({
+          "2026-10-08": { previous: proofCell(200, 0, 2), corrected: proofCell(100, 0, 1) },
+        }),
+      }
+    );
+
+    expect(afterDelete.nextState?.days["2026-10-08"]?.tokens).toBe(200);
+  });
+
+  it("treats every credited cell of a pre-v2 state as residue", () => {
+    // A state written before allocation schema v2 predates recounts: its
+    // stored rows are all previous-generation counts, so a matching proof
+    // corrects them without a transition or a residue set.
+    const stored = devinSnapshot(devinContribution("2026-10-08", 1_000));
+    const legacyState = {
+      version: SUPPORTED_VERSIONED_PARSERS["devin-cli"],
+      baselineEstablished: true,
+      aggregate: {
+        input: 1_000,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        reasoning: 0,
+        tokens: 1_000,
+        messages: 1,
+        inputIncludingCacheRead: 1_000,
+      },
+      days: stored,
+    } as ParserClientHighWaterState;
+
+    const plan = devinPlan(stored, devinSnapshot(devinContribution("2026-10-08", 890)), {
+      state: legacyState,
+      recountProof: proof({
+        "2026-10-08": { previous: proofCell(1_000), corrected: proofCell(890) },
+      }),
+    });
+
+    expect(plan.mode).toBe("incremental");
+    expect(plan.nextState?.days["2026-10-08"]?.tokens).toBe(890);
+    expect(plan.nextState?.residueDays).toEqual({});
+    expect(plan.nextState?.aggregate.tokens).toBe(890);
   });
 
   it("keeps a corrected day when one of its sources later disappears", () => {
@@ -2768,15 +2889,17 @@ describe("cursor recount proof rollout", () => {
     expect(transition.nextState?.days["2026-10-08"]?.tokens ?? 0).toBe(0);
     expect(transition.nextState?.days["2026-10-09"]?.tokens).toBe(110);
 
-    // After the transition a proof never lowers counts, so a snapshot that
-    // moves later is credited on both days, as the ordinary merge did.
+    // After a transition that ran without a proof, the stored day is still
+    // previous-generation residue, so a proof that arrives later can still
+    // zero it — the stored 100 is exactly what generation 1 counted, and
+    // keeping it would double-count the event the snapshot re-dated.
     const day8 = cursorSnapshot(cursorContribution("2026-10-08", 100, 1, 1));
     const state = cursorPlan({ existing: day8, incoming: day8 }).nextState!;
     const later = cursorPlan({ existing: {}, incoming: day9, state, recountProof: moved });
     expect(later.recountTransition).toBeUndefined();
-    expect(later.nextState?.days["2026-10-08"]?.tokens).toBe(100);
+    expect(later.nextState?.days["2026-10-08"]?.tokens ?? 0).toBe(0);
     expect(later.nextState?.days["2026-10-09"]?.tokens).toBe(110);
-    expect(later.nextState?.aggregate.tokens).toBe(210);
+    expect(later.nextState?.aggregate.tokens).toBe(110);
   });
 
   it("keeps an empty full-history snapshot pending", () => {
