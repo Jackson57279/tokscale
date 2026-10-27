@@ -993,7 +993,7 @@ describe("POST /api/submit devin-cli recount proof", () => {
     expect((json.warnings ?? []).some((warning) => warning.includes("Corrected"))).toBe(false);
   });
 
-  it("suppresses new growth while the scan sits below the credited baseline, then credits the excess", async () => {
+  it("credits a new day while the scan sits below the credited baseline", async () => {
     const store = newStore();
     seedInflatedDays(store);
 
@@ -1002,23 +1002,23 @@ describe("POST /api/submit devin-cli recount proof", () => {
 
     // The preserved 10-06 day (88M) stays in the credited ledger, but the
     // scanner no longer reports it, so the scan's lifetime (700M) is below
-    // the credited baseline (777M): growth on a brand-new day is suppressed
-    // until the scan exceeds it — the same monotonic rule as before.
-    await submit(
+    // the credited baseline (777M). That deleted history must not hold back
+    // usage on a brand-new day.
+    const json = await submit(
       store,
       submissionBody([...CORRECTED_SCAN, { date: "2026-10-09", tokens: 11_000_000, cost: 11 }]),
     );
-    expect(storedClientTokens(store, "2026-10-09", "devin-cli")).toBeUndefined();
-    expect(storedTokens(store)).toBe(777_000_000);
+    expect(storedClientTokens(store, "2026-10-09", "devin-cli")).toBe(11_000_000);
+    expect(storedTokens(store)).toBe(788_000_000);
+    expect((json.warnings ?? []).some((warning) => warning.includes("Added no Devin CLI tokens"))).toBe(false);
 
-    // Once the scan's lifetime exceeds the credited baseline, the excess is
-    // credited newest-first; the 10-09 cell has the only positive capacity.
+    // Growth on that day is credited up to the day's snapshot total, once.
     await submit(
       store,
       submissionBody([...CORRECTED_SCAN, { date: "2026-10-09", tokens: 101_000_000, cost: 101 }]),
     );
-    expect(storedClientTokens(store, "2026-10-09", "devin-cli")).toBe(13_000_000);
-    expect(storedTokens(store)).toBe(790_000_000);
+    expect(storedClientTokens(store, "2026-10-09", "devin-cli")).toBe(101_000_000);
+    expect(storedTokens(store)).toBe(878_000_000);
   });
 
   it("ignores a proof that does not describe the submitted snapshot", async () => {

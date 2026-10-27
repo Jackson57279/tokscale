@@ -2026,7 +2026,7 @@ describe("devin-cli recount proof", () => {
       }
     );
     expect(lower.mode).toBe("incremental");
-    expect(lower.highWaterDeficit).toBeGreaterThan(0);
+    expect(lower.highWaterDeficit).toBeUndefined();
     expect(lower.increments["2026-10-08"]).toBeUndefined();
     expect(lower.nextState?.days["2026-10-08"]?.tokens).toBe(455_000_000);
 
@@ -2042,6 +2042,35 @@ describe("devin-cli recount proof", () => {
     );
     expect(grown.mode).toBe("incremental");
     expect(grown.nextState?.aggregate.tokens).toBe(700_000_000);
+  });
+
+  it("keeps crediting new usage after local Devin history shrinks", () => {
+    // Devin CLI deletes `message_nodes` rows (a deleted session, a rewound
+    // branch), so later scans no longer carry that usage. The stored days
+    // stay, and new usage must still count.
+    const stored = devinSnapshot(
+      devinContribution("2026-10-01", 5_000),
+      devinContribution("2026-10-08", 400)
+    );
+    const transition = devinPlan(stored, devinSnapshot(devinContribution("2026-10-08", 400)));
+    expect(transition.mode).toBe("baseline-legacy");
+    expect(transition.nextState?.days["2026-10-01"]?.tokens).toBe(5_000);
+
+    const grown = devinPlan(
+      {},
+      devinSnapshot(
+        devinContribution("2026-10-08", 450, "swe-2-high", 0, 2),
+        devinContribution("2026-10-09", 300)
+      ),
+      { state: transition.nextState }
+    );
+    expect(grown.mode).toBe("incremental");
+    expect(grown.highWaterDeficit).toBeUndefined();
+    expect(grown.increments["2026-10-08"]?.tokens).toBe(50);
+    expect(grown.increments["2026-10-08"]?.messages).toBe(1);
+    expect(grown.increments["2026-10-09"]?.tokens).toBe(300);
+    expect(grown.nextState?.days["2026-10-01"]?.tokens).toBe(5_000);
+    expect(grown.nextState?.aggregate.tokens).toBe(5_750);
   });
 
   it("rejects a proof that does not describe the submitted snapshot", () => {
