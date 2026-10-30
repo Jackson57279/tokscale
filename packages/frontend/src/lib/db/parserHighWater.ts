@@ -102,9 +102,10 @@ const SNAPSHOT_LAYOUT_CLIENTS: ReadonlySet<string> = new Set(["droid", "amp"]);
  * one, the old receiver stored their 200, B is gone at the upgrade, and A's
  * previous side is 200, so the day drops to 100.
  *
- * A non-fullHistory submit still freezes, so a partial scan never corrects
- * anything, and an empty snapshot keeps the transition pending rather than
- * establishing a baseline the parser never actually read.
+ * A partial scan never corrects anything: it freezes, or for
+ * PER_DAY_GROWTH_CLIENTS credits growth on its complete days. An empty
+ * snapshot keeps the transition pending rather than establishing a baseline
+ * the parser never actually read.
  */
 const RECOUNT_PROOF_CLIENTS: ReadonlySet<string> = new Set([
   "cursor",
@@ -135,6 +136,11 @@ const RECOUNT_PROOF_CLIENTS: ReadonlySet<string> = new Set([
  * request had lost its first copy while a later compaction copy remained. A
  * record that moved to another day after the transition would be credited on
  * both days, as the ordinary per-day merge did.
+ *
+ * Because no day's budget reads another day, a date-bounded scan that read
+ * each of its days in full (`scanScope.completeDayClients`) may credit them
+ * once the baseline is set, so `tokscale submit --week` need not ship the
+ * whole history.
  */
 const PER_DAY_GROWTH_CLIENTS: ReadonlySet<string> = new Set([
   "cursor",
@@ -1518,6 +1524,12 @@ export function planParserHighWaterSubmission(args: {
   incomingVersion?: number;
   fullHistory: boolean;
   /**
+   * The snapshot reads every day it dates in full and omits the rest: a
+   * date-bounded scan (`scanScope.completeDayClients`). Honored only for
+   * PER_DAY_GROWTH_CLIENTS whose baseline a full snapshot already set.
+   */
+  completeDays?: boolean;
+  /**
    * Client-reported earliest `YYYY-MM-DD` still retained locally. It is
    * preserved for the submission protocol but cannot relax the high-water
    * without server-verifiable evidence of that retention transition.
@@ -1568,7 +1580,17 @@ export function planParserHighWaterSubmission(args: {
   if (args.incomingVersion !== supportedVersion) {
     return { mode: "freeze", increments: {} };
   }
-  if (!args.fullHistory) {
+  // Per-day growth reads only the days a snapshot dates, so a date-bounded
+  // scan credits them exactly as a full snapshot whose other days did not
+  // change. It cannot set the baseline or apply a recount proof, and the days
+  // it does not date keep their credited and observed cells.
+  const dayScoped =
+    !args.fullHistory &&
+    args.completeDays === true &&
+    PER_DAY_GROWTH_CLIENTS.has(args.client) &&
+    args.state != null &&
+    args.state.baselineEstablished !== false;
+  if (!args.fullHistory && !dayScoped) {
     if (args.state) return { mode: "freeze", increments: {} };
     // Identity is trustworthy even though coverage is not. Persist a pending
     // state so every later old/undeclared submit freezes, but do not let this
@@ -1598,9 +1620,10 @@ export function planParserHighWaterSubmission(args: {
   // side. After the transition it can only restate a floored cost (see
   // `applyRecountProofToCell`).
   const growth = PER_DAY_GROWTH_CLIENTS.has(args.client) ? "per-day" : "lifetime";
-  const proof = RECOUNT_PROOF_CLIENTS.has(args.client)
-    ? args.recountProof
-    : undefined;
+  const proof =
+    RECOUNT_PROOF_CLIENTS.has(args.client) && !dayScoped
+      ? args.recountProof
+      : undefined;
   const recount = proof
     ? partitionRecountProof(proof, args.incomingDays)
     : { accepted: [], rejected: [] };
@@ -1765,10 +1788,17 @@ export function planParserHighWaterSubmission(args: {
     incomingDays: args.incomingDays,
   });
   if (followed) return followed;
+  // Budget a date-bounded scan against the observed cells of its own days, so
+  // it allocates what a full snapshot with the same other days would.
+  const windowObservedDays = createSafeRecord<ClientBreakdownData>();
+  for (const date of dayScoped ? Object.keys(args.incomingDays) : []) {
+    const observed = ownValue(previousObservedDays, date);
+    if (observed) windowObservedDays[date] = observed;
+  }
   const increments = allocateIncrements(
     args.client,
     previousCreditedDays,
-    previousObservedDays,
+    dayScoped ? windowObservedDays : previousObservedDays,
     args.incomingDays,
     previousAggregate,
     incomingAggregate,
@@ -1789,7 +1819,9 @@ export function planParserHighWaterSubmission(args: {
       supportedVersion,
       previousCreditedDays,
       increments,
-      args.incomingDays,
+      dayScoped
+        ? { ...previousObservedDays, ...args.incomingDays }
+        : args.incomingDays,
       remainingResidue
     ),
     // The residue set in effect for this submit's corrections, so the route
