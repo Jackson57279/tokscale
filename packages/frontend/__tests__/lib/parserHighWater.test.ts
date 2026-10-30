@@ -1542,6 +1542,23 @@ describe("droid parser high-water", () => {
     expect(plan.mode).toBe("freeze");
     expect(plan.increments).toEqual({});
   });
+
+  it("does not credit complete days, because a growing session moves tokens between days", () => {
+    const state = droidPlan(wholeSessionOnOneDay, sessionSplitAcrossDays).nextState!;
+
+    const plan = planParserHighWaterSubmission({
+      client: "droid",
+      incomingVersion: SUPPORTED_VERSIONED_PARSERS.droid,
+      fullHistory: false,
+      completeDays: true,
+      existingLegacyDays: {},
+      incomingDays: droidSnapshot(droidContribution("2026-08-10", 500_000)),
+      state,
+    });
+
+    expect(plan.mode).toBe("freeze");
+    expect(plan.increments).toEqual({});
+  });
 });
 
 describe("devin-cli recount proof", () => {
@@ -2646,6 +2663,7 @@ describe("cursor recount proof rollout", () => {
     existing: Record<string, ClientBreakdownData>;
     incoming: Record<string, ClientBreakdownData>;
     fullHistory?: boolean;
+    completeDays?: boolean;
     incomingVersion?: number;
     state?: ParserClientHighWaterState;
     persistedVersion?: number;
@@ -2656,6 +2674,7 @@ describe("cursor recount proof rollout", () => {
       incomingVersion:
         args.incomingVersion ?? SUPPORTED_VERSIONED_PARSERS.cursor,
       fullHistory: args.fullHistory ?? true,
+      completeDays: args.completeDays,
       existingLegacyDays: args.existing,
       incomingDays: args.incoming,
       state: args.state,
@@ -2945,6 +2964,93 @@ describe("cursor recount proof rollout", () => {
     });
     expect(followed.recountDays).toEqual(["2026-10-08"]);
     expect(followed.nextState?.days["2026-10-08"]?.tokens).toBe(400);
+  });
+
+  it("credits a date-bounded scan's complete days after the baseline and keeps older days", () => {
+    const history = cursorSnapshot(
+      cursorContribution("2026-10-01", 5_000, 50, 10),
+      cursorContribution("2026-10-08", 400, 4, 1)
+    );
+    const baseline = cursorPlan({ existing: {}, incoming: history });
+    expect(baseline.mode).toBe("baseline-new");
+
+    const week = cursorPlan({
+      existing: history,
+      incoming: cursorSnapshot(
+        cursorContribution("2026-10-08", 450, 4.5, 2),
+        cursorContribution("2026-10-09", 300, 3, 1)
+      ),
+      fullHistory: false,
+      completeDays: true,
+      state: baseline.nextState,
+    });
+
+    expect(week.mode).toBe("incremental");
+    expect(week.increments["2026-10-08"]?.tokens).toBe(50);
+    expect(week.increments["2026-10-08"]?.messages).toBe(1);
+    expect(week.increments["2026-10-09"]?.tokens).toBe(300);
+    expect(week.nextState?.days["2026-10-01"]?.tokens).toBe(5_000);
+    expect(week.nextState?.observedDays?.["2026-10-01"]?.tokens).toBe(5_000);
+    expect(week.nextState?.aggregate.tokens).toBe(5_750);
+
+    const full = cursorPlan({
+      existing: {},
+      incoming: cursorSnapshot(
+        cursorContribution("2026-10-01", 5_000, 50, 10),
+        cursorContribution("2026-10-08", 450, 4.5, 2),
+        cursorContribution("2026-10-09", 300, 3, 1)
+      ),
+      state: week.nextState,
+    });
+    expect(full.increments).toEqual({});
+    expect(full.nextState?.aggregate.tokens).toBe(5_750);
+  });
+
+  it("keeps a date-bounded scan frozen until a full snapshot establishes the baseline", () => {
+    const first = cursorPlan({
+      existing: inflated,
+      incoming: corrected,
+      fullHistory: false,
+      completeDays: true,
+    });
+    expect(first.mode).toBe("freeze");
+    expect(first.nextState?.baselineEstablished).toBe(false);
+
+    const again = cursorPlan({
+      existing: inflated,
+      incoming: corrected,
+      fullHistory: false,
+      completeDays: true,
+      state: first.nextState,
+    });
+    expect(again.mode).toBe("freeze");
+    expect(again.nextState).toBeUndefined();
+  });
+
+  it("leaves residue for a full snapshot to correct instead of a date-bounded scan", () => {
+    const transition = cursorPlan({ existing: inflated, incoming: corrected });
+    expect(transition.nextState?.days["2026-10-08"]?.tokens).toBe(1_000);
+
+    const week = cursorPlan({
+      existing: inflated,
+      incoming: corrected,
+      fullHistory: false,
+      completeDays: true,
+      state: transition.nextState,
+      recountProof: proof,
+    });
+    expect(week.mode).toBe("incremental");
+    expect(week.recountDays).toBeUndefined();
+    expect(week.nextState?.days["2026-10-08"]?.tokens).toBe(1_000);
+
+    const full = cursorPlan({
+      existing: inflated,
+      incoming: corrected,
+      state: week.nextState,
+      recountProof: proof,
+    });
+    expect(full.recountDays).toEqual(["2026-10-08"]);
+    expect(full.nextState?.days["2026-10-08"]?.tokens).toBe(400);
   });
 });
 
