@@ -855,30 +855,33 @@ pub struct UnpricedSubmissionUsage {
 
 /// Submission clients the receiver only admits from a complete snapshot:
 /// the versioned-parser high-water set (`SUPPORTED_VERSIONED_PARSERS` on the
-/// receiver) plus the atomic MiMo and Antigravity source families. A
-/// date-filtered submission cannot shrink their coverage without freezing
-/// their stored history — a partial window for one of these is not
-/// submittable at all — so the submission graph keeps their messages
-/// regardless of `since`/`until`/`year`, and the scan scope names them in
-/// `fullHistoryClients`.
+/// receiver) plus the atomic MiMo and Antigravity source families, less
+/// [`COMPLETE_DAY_SUBMIT_CLIENTS`]. A date-filtered submission cannot shrink
+/// their coverage without freezing their stored history — a partial window
+/// for one of these is not submittable at all — so the submission graph keeps
+/// their messages regardless of `since`/`until`/`year`, and the scan scope
+/// names them in `fullHistoryClients`.
 ///
-/// Devin CLI and Cursor are in the set since their generation-2 registrations:
-/// without full-history authority their submissions freeze, and their recount
-/// proofs only ride on snapshots declared complete. A source that partly failed
-/// to read is handled after the scan, when `source_reads` withholds the
-/// declaration from exactly that client.
+/// A source that partly failed to read is handled after the scan, when
+/// `source_reads` withholds the declaration from exactly that client.
 pub const FULL_HISTORY_SUBMIT_CLIENTS: &[&str] = &[
     "amp",
     "antigravity",
     "antigravity-cli",
     "antigravity-extension",
     "copilot",
-    "cursor",
-    "devin-cli",
     "droid",
     "micode",
     "micode-desktop",
 ];
+
+/// Versioned submission clients whose growth the receiver budgets per day
+/// (`PER_DAY_GROWTH_CLIENTS`). A date-filtered submission ships only their
+/// window and names them in `completeDayClients`, since every day it dates was
+/// read in full. The receiver credits those days once a full-history
+/// submission has set the client's baseline, and applies their recount proofs
+/// only from a full-history submission.
+pub const COMPLETE_DAY_SUBMIT_CLIENTS: &[&str] = &["cursor", "devin-cli"];
 
 #[derive(Debug, Clone, Default)]
 pub struct ReportOptions {
