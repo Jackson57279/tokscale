@@ -1046,7 +1046,7 @@ fn parse_pi_format_file_inner(
                 usage.to_breakdown()
             },
             reported_cost.unwrap_or(0.0),
-            agent.clone(),
+            agent.as_deref(),
         )
         .with_billing(
             // Record-level evidence only: a reply or tool result names its
@@ -1109,11 +1109,11 @@ fn parse_pi_format_file_inner(
             }
         }
         unified.session_title = header_title
-            .clone()
-            .or_else(|| rolling_title.clone())
+            .as_deref()
+            .or(rolling_title.as_deref())
             .map(crate::sessions::SharedStr::from);
         unified.parent_session_id = parent_session_id
-            .clone()
+            .as_deref()
             .map(crate::sessions::SharedStr::from);
         unified.set_workspace(workspace_key.clone(), workspace_label.clone());
         observer.observe_entry(&entry, Some(&unified));

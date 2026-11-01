@@ -508,12 +508,12 @@ fn collect_candidates(
 fn count_claims(
     messages: &[UnifiedMessage],
     candidates: &[Vec<CandidateMatch>],
-) -> HashMap<(String, usize), usize> {
-    let mut claims: HashMap<(String, usize), usize> = HashMap::new();
+) -> HashMap<(super::SharedStr, usize), usize> {
+    let mut claims: HashMap<(super::SharedStr, usize), usize> = HashMap::new();
     for (message, matches) in messages.iter().zip(candidates) {
         for candidate in matches {
             *claims
-                .entry((message.model_id.to_string(), candidate.row_index))
+                .entry((message.model_id.clone(), candidate.row_index))
                 .or_default() += 1;
         }
     }
@@ -525,7 +525,7 @@ fn count_claims(
 fn unique_claim(
     message: &UnifiedMessage,
     matches: &[CandidateMatch],
-    claims: &HashMap<(String, usize), usize>,
+    claims: &HashMap<(super::SharedStr, usize), usize>,
 ) -> Option<CandidateMatch> {
     if message.client != "codex" {
         return None;
@@ -533,7 +533,7 @@ fn unique_claim(
     let [candidate] = matches else {
         return None;
     };
-    if claims.get(&(message.model_id.to_string(), candidate.row_index)) != Some(&1) {
+    if claims.get(&(message.model_id.clone(), candidate.row_index)) != Some(&1) {
         return None;
     }
     Some(CandidateMatch {

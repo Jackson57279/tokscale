@@ -1,19 +1,20 @@
 //! Scan-scoped side metadata; the public and cached message layout stays stable.
 
-use crate::{sessions::UnifiedMessage, CostSource, EstimateSource};
+use crate::sessions::{SharedStr, UnifiedMessage};
+use crate::{CostSource, EstimateSource};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 #[derive(PartialEq, Eq, Hash)]
 struct AppliedEstimate {
-    client: String,
-    model: String,
-    provider: String,
-    billing_provider: Option<String>,
-    pricing_model: Option<String>,
-    session: String,
+    client: SharedStr,
+    model: SharedStr,
+    provider: SharedStr,
+    billing_provider: Option<SharedStr>,
+    pricing_model: Option<SharedStr>,
+    session: SharedStr,
     timestamp: i64,
-    service_tier: Option<String>,
+    service_tier: Option<SharedStr>,
     tokens: [i64; 6],
     cost_bits: u64,
 }
@@ -21,14 +22,14 @@ struct AppliedEstimate {
 impl From<&UnifiedMessage> for AppliedEstimate {
     fn from(message: &UnifiedMessage) -> Self {
         Self {
-            client: message.client.to_string(),
-            model: message.model_id.to_string(),
-            provider: message.provider_id.to_string(),
-            billing_provider: message.billing_identity.id().map(str::to_owned),
-            pricing_model: message.pricing_model_id.as_ref().map(ToString::to_string),
-            session: message.session_id.to_string(),
+            client: message.client.clone(),
+            model: message.model_id.clone(),
+            provider: message.provider_id.clone(),
+            billing_provider: message.billing_identity.id().map(SharedStr::from),
+            pricing_model: message.pricing_model_id.clone(),
+            session: message.session_id.clone(),
             timestamp: message.timestamp,
-            service_tier: message.service_tier.as_ref().map(ToString::to_string),
+            service_tier: message.service_tier.clone(),
             tokens: [
                 message.tokens.input,
                 message.tokens.output,

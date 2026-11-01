@@ -71,10 +71,22 @@ fn finite(m: &UnifiedMessage) -> bool {
         && m.message_count >= 0
         && chrono::NaiveDate::parse_from_str(&m.date, "%Y-%m-%d").is_ok()
 }
-fn signature(m: &UnifiedMessage) -> (String, String, String, i64, i64, i64, i64, i64, i64) {
+fn signature(
+    m: &UnifiedMessage,
+) -> (
+    crate::sessions::SharedStr,
+    crate::sessions::SharedStr,
+    String,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+) {
     (
-        m.client.to_string(),
-        m.session_id.to_string(),
+        m.client.clone(),
+        m.session_id.clone(),
         crate::model_name_for_grouping(&m.client, &m.provider_id, &m.model_id),
         m.timestamp / 1000,
         m.tokens.input,

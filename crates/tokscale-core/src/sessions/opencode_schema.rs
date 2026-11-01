@@ -968,7 +968,7 @@ impl SchemaAccumulator {
                 reasoning,
             },
             cost,
-            agent.clone(),
+            agent.as_deref(),
         )
         .with_billing(
             billing_provider.as_deref(),
@@ -1006,7 +1006,7 @@ impl SchemaAccumulator {
         if let Some(ref title) = row_session_title {
             let trimmed = title.trim();
             if !trimmed.is_empty() {
-                unified.session_title = Some(trimmed.to_string().into());
+                unified.session_title = Some(trimmed.into());
             }
         }
 

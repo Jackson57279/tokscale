@@ -192,7 +192,7 @@ fn parse_internal_chat_usage(db_path: &Path, conn: &Connection) -> Vec<UnifiedMe
                 billing_provider.as_deref(),
                 super::BillingIdentityOrigin::ExplicitRecord,
             );
-            message.agent = Some(STUDIO_AGENT.to_string().into());
+            message.agent = Some(STUDIO_AGENT.into());
             message.is_turn_start = true;
             if authoritative_zero_cost {
                 message.mark_provider_reported_cost();
@@ -255,7 +255,7 @@ fn parse_external_api_usage(db_path: &Path, conn: &Connection) -> Vec<UnifiedMes
             0.0,
             Some(format!("unsloth:api:{id}")),
         );
-        message.agent = Some(API_AGENT.to_string().into());
+        message.agent = Some(API_AGENT.into());
         message.session_title = non_blank(Some(endpoint)).map(crate::sessions::SharedStr::from);
         message.is_turn_start = true;
         message.mark_provider_reported_cost();

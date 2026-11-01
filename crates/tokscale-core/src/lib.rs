@@ -1178,11 +1178,14 @@ fn flushed_message_identity(
     {
         return None;
     }
-    let mut model_id = message.model_id.to_string();
-    let mut provider_id = message.provider_id.to_string();
-    if context.include_synthetic {
+    let normalized_model = (context.include_synthetic
+        && sessions::synthetic::is_synthetic_gateway(&message.model_id, &message.provider_id))
+    .then(|| {
+        let mut model_id = message.model_id.to_string();
+        let mut provider_id = message.provider_id.to_string();
         sessions::synthetic::normalize_synthetic_gateway_fields(&mut model_id, &mut provider_id);
-    }
+        model_id
+    });
     let date = match &context.timezone {
         Some(timezone) => {
             let mut rebucketed = message.clone();
@@ -1191,7 +1194,14 @@ fn flushed_message_identity(
         }
         None => message.date.clone(),
     };
-    Some((date.to_string(), canonical_model_id(&model_id)))
+    Some((
+        date.to_string(),
+        canonical_model_id(
+            normalized_model
+                .as_deref()
+                .unwrap_or(message.model_id.as_str()),
+        ),
+    ))
 }
 
 fn parse_all_messages_with_pricing_with_env_strategy(
@@ -1402,13 +1412,19 @@ fn flush_retained_message<S: MessageSink>(
     sink: &mut S,
     estimate_source: Option<EstimateSource>,
 ) {
-    if context.include_synthetic {
+    if context.include_synthetic
+        && sessions::synthetic::is_synthetic_gateway(&message.model_id, &message.provider_id)
+    {
         let raw_model = message.model_id.clone();
         let mut model_id = message.model_id.to_string();
         let mut provider_id = message.provider_id.to_string();
         sessions::synthetic::normalize_synthetic_gateway_fields(&mut model_id, &mut provider_id);
-        message.model_id = SharedStr::from(model_id);
-        message.provider_id = SharedStr::from(provider_id);
+        if model_id != raw_model.as_str() {
+            message.model_id = SharedStr::from(model_id);
+        }
+        if provider_id != message.provider_id.as_str() {
+            message.provider_id = SharedStr::from(provider_id);
+        }
         message.preserve_pricing_model(raw_model.as_str());
     }
 
@@ -1417,7 +1433,7 @@ fn flush_retained_message<S: MessageSink>(
     }
 
     if let (None, Some(local)) = (&message.machine_label, context.local_machine_label) {
-        message.machine_label = Some(local.to_string().into());
+        message.machine_label = Some(SharedStr::from(local));
     }
 
     sink.accept_with_estimate_source(message, estimate_source);
@@ -3906,7 +3922,7 @@ fn parse_all_messages_streaming<S: MessageSink>(
                 if message.client != sessions::codex::OPENCLAW_CLIENT_ID {
                     // The location says whose usage this is even when an older
                     // OpenClaw did not announce itself as the originator.
-                    message.client = sessions::codex::OPENCLAW_CLIENT_ID.to_string().into();
+                    message.client = sessions::codex::OPENCLAW_CLIENT_ID.into();
                     if let Some(thread) = &thread_from_name {
                         message.session_id = thread.clone().into();
                     }
@@ -6768,9 +6784,9 @@ fn apply_headless_agent(message: &mut UnifiedMessage, is_headless: bool) {
         // A capture under the headless root is a `codex exec` run even when its
         // `session_meta` omits `source: "exec"` and the parser bucketed it as
         // an interactive or subagent thread, so the path wins.
-        message.agent = Some(sessions::codex::CODEX_HEADLESS_AGENT.to_string().into());
+        message.agent = Some(sessions::codex::CODEX_HEADLESS_AGENT.into());
     } else if message.agent.is_none() {
-        message.agent = Some("headless".to_string().into());
+        message.agent = Some("headless".into());
     }
 }
 
@@ -7629,7 +7645,7 @@ pub fn parse_local_clients(options: LocalParseOptions) -> Result<ParsedMessages,
                     .into_iter()
                     .map(|mut message| {
                         if message.client != sessions::codex::OPENCLAW_CLIENT_ID {
-                            message.client = sessions::codex::OPENCLAW_CLIENT_ID.to_string().into();
+                            message.client = sessions::codex::OPENCLAW_CLIENT_ID.into();
                             if let Some(thread) = &thread_from_name {
                                 message.session_id = thread.clone().into();
                             }
@@ -19897,7 +19913,7 @@ mod tests {
                 reasoning: 0,
             },
             0.42,
-            Some("planner".to_string()),
+            Some("planner"),
         );
 
         apply_pricing_if_available(&mut msg, None);
@@ -25520,7 +25536,7 @@ mod tests {
                 0,
                 TokenBreakdown::default(),
                 0.0,
-                agent.map(str::to_string),
+                agent,
             )
         };
 

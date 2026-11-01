@@ -805,7 +805,7 @@ impl DataLoader {
     ) -> Result<UsageData> {
         let mut model_map: HashMap<String, ModelUsage> = HashMap::new();
         let mut agent_map: HashMap<String, AgentUsage> = HashMap::new();
-        let mut agent_clients: HashMap<String, BTreeSet<String>> = HashMap::new();
+        let mut agent_clients: HashMap<String, BTreeSet<tokscale_core::SharedStr>> = HashMap::new();
         let mut daily_map: HashMap<NaiveDate, DailyUsage> = HashMap::new();
         let mut hourly_map: HashMap<NaiveDateTime, HourlyUsage> = HashMap::new();
         let mut minutely_map: HashMap<NaiveDateTime, MinutelyUsage> = HashMap::new();
@@ -875,7 +875,8 @@ impl DataLoader {
         let mut session_rolled_map: HashMap<String, SessionUsage> = HashMap::new();
         // Distinct subagent session ids rolled into each bucket, so the
         // "(+N)" marker counts sessions, not messages.
-        let mut rolled_child_sessions: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut rolled_child_sessions: HashMap<String, HashSet<tokscale_core::SharedStr>> =
+            HashMap::new();
         // Immediate-parent edge per subagent session (child key -> parent
         // key), recorded once per link. Messages name only their immediate
         // parent, so sub-sub-agent chains are resolved to the root session
@@ -1139,7 +1140,7 @@ impl DataLoader {
                     agent_clients
                         .entry(normalized_agent)
                         .or_default()
-                        .insert(msg.client.to_string());
+                        .insert(msg.client.clone());
                 }
             }
 
@@ -1492,7 +1493,7 @@ impl DataLoader {
                     && rolled_child_sessions
                         .entry(rolled_key.clone())
                         .or_default()
-                        .insert(msg.session_id.to_string())
+                        .insert(msg.session_id.clone())
                 {
                     // First sight of this link: remember the edge so the
                     // chain fold below can resolve it to the root.
@@ -2818,7 +2819,7 @@ mod tests {
                     reasoning: 0,
                 },
                 1.25,
-                Some("builder".to_string()),
+                Some("builder"),
             ),
             UnifiedMessage::new_with_agent(
                 "roocode",
@@ -2835,7 +2836,7 @@ mod tests {
                     reasoning: 0,
                 },
                 2.75,
-                Some("builder".to_string()),
+                Some("builder"),
             ),
         ];
 
@@ -4006,7 +4007,7 @@ mod tests {
                     reasoning: 0,
                 },
                 1.5,
-                Some("Sisyphus".to_string()),
+                Some("Sisyphus"),
             ),
             UnifiedMessage::new_with_agent(
                 "opencode",
@@ -4023,7 +4024,7 @@ mod tests {
                     reasoning: 0,
                 },
                 2.5,
-                Some("Sisyphus (Ultraworker)".to_string()),
+                Some("Sisyphus (Ultraworker)"),
             ),
         ];
 
@@ -4058,7 +4059,7 @@ mod tests {
                     reasoning: 0,
                 },
                 1.5,
-                Some("Hephaestus".to_string()),
+                Some("Hephaestus"),
             ),
             UnifiedMessage::new_with_agent(
                 "opencode",
@@ -4075,7 +4076,7 @@ mod tests {
                     reasoning: 0,
                 },
                 2.5,
-                Some("hephaestus".to_string()),
+                Some("hephaestus"),
             ),
         ];
 
@@ -4109,7 +4110,7 @@ mod tests {
                     reasoning: 0,
                 },
                 1.5,
-                Some("Sisyphus".to_string()),
+                Some("Sisyphus"),
             ),
             UnifiedMessage::new_with_agent(
                 "claude",
@@ -4126,7 +4127,7 @@ mod tests {
                     reasoning: 0,
                 },
                 2.5,
-                Some("Sisyphus (Ultraworker)".to_string()),
+                Some("Sisyphus (Ultraworker)"),
             ),
         ];
 

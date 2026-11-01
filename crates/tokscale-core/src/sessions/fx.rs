@@ -328,13 +328,15 @@ pub fn parse_fx_file(path: &Path) -> Vec<UnifiedMessage> {
         let (cost, cost_source) = reported_cost(model_usage.total_cost);
 
         messages.push(UnifiedMessage {
-            client: CLIENT_ID.to_string().into(),
-            model_id: model_id.into(),
-            provider_id: provider_id.into(),
-            session_id: session_id.clone().into(),
-            workspace_key: workspace_key.clone().map(crate::sessions::SharedStr::from),
+            client: CLIENT_ID.into(),
+            model_id: model_id.as_str().into(),
+            provider_id: provider_id.as_str().into(),
+            session_id: session_id.as_str().into(),
+            workspace_key: workspace_key
+                .as_deref()
+                .map(crate::sessions::SharedStr::from),
             workspace_label: workspace_label
-                .clone()
+                .as_deref()
                 .map(crate::sessions::SharedStr::from),
             timestamp,
             date: String::new().into(),
@@ -378,13 +380,15 @@ pub fn parse_fx_file(path: &Path) -> Vec<UnifiedMessage> {
         let (cost, cost_source) = reported_cost(snapshot.total_cost);
         if tokens.total() > 0 || request_count > 0 || cost > 0.0 {
             messages.push(UnifiedMessage {
-                client: CLIENT_ID.to_string().into(),
-                model_id: UNKNOWN_MODEL.to_string().into(),
-                provider_id: "zai".to_string().into(),
-                session_id: session_id.clone().into(),
-                workspace_key: workspace_key.clone().map(crate::sessions::SharedStr::from),
+                client: CLIENT_ID.into(),
+                model_id: UNKNOWN_MODEL.into(),
+                provider_id: "zai".into(),
+                session_id: session_id.as_str().into(),
+                workspace_key: workspace_key
+                    .as_deref()
+                    .map(crate::sessions::SharedStr::from),
                 workspace_label: workspace_label
-                    .clone()
+                    .as_deref()
                     .map(crate::sessions::SharedStr::from),
                 timestamp,
                 date: String::new().into(),

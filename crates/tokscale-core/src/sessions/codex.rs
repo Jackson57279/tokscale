@@ -1902,9 +1902,9 @@ fn new_codex_usage_message(
     tokens: TokenBreakdown,
 ) -> UnifiedMessage {
     let agent = if state.session_is_headless {
-        Some(CODEX_HEADLESS_AGENT.to_string())
+        Some(CODEX_HEADLESS_AGENT)
     } else {
-        state.session_agent.clone()
+        state.session_agent.as_deref()
     };
 
     let provider = state
@@ -2281,7 +2281,7 @@ fn flush_pending_model_messages(
             let upstream_session_id = message.session_id.clone();
             set_codex_dedup_key(&mut message, model, &upstream_session_id, None);
         }
-        message.model_id = model.to_string().into();
+        message.model_id = model.into();
         messages.push(message);
         if used_fallback_timestamp {
             fallback_timestamp_indices.push(messages.len() - 1);
@@ -2570,9 +2570,9 @@ fn parse_codex_headless_line(
         .or_else(|| inferred_provider_from_model(&model))
         .unwrap_or("openai");
     let agent = if state.session_is_headless {
-        Some(CODEX_HEADLESS_AGENT.to_string())
+        Some(CODEX_HEADLESS_AGENT)
     } else {
-        state.session_agent.clone()
+        state.session_agent.as_deref()
     };
 
     let used_fallback_timestamp = usage.timestamp_ms.is_none();

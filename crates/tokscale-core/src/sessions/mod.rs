@@ -404,7 +404,7 @@ impl UnifiedMessage {
         timestamp: i64,
         tokens: TokenBreakdown,
         cost: f64,
-        agent: Option<String>,
+        agent: Option<&str>,
     ) -> Self {
         Self::new_full(
             client.as_ref(),
@@ -452,7 +452,7 @@ impl UnifiedMessage {
         timestamp: i64,
         tokens: TokenBreakdown,
         cost: f64,
-        agent: Option<String>,
+        agent: Option<&str>,
         dedup_key: Option<String>,
     ) -> Self {
         let date = timestamp_to_date(timestamp);

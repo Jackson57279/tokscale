@@ -261,6 +261,10 @@ fn parse_tree(value: &Value, coverage: &mut Coverage) -> Conversation {
     };
     let mut previous: BTreeMap<String, TokenBreakdown> = BTreeMap::new();
     let mut messages = HashMap::new();
+    let agent = crate::sessions::SharedStr::from(format!(
+        "Claude Desktop {}",
+        value["product"].as_str().unwrap_or("chat")
+    ));
     for collection in ["events", "messages", "chat_messages"] {
         for event in tree[collection].as_array().into_iter().flatten() {
             let payload = event.get("payload").unwrap_or(event);
@@ -358,13 +362,7 @@ fn parse_tree(value: &Value, coverage: &mut Coverage) -> Conversation {
             if ts == 0 {
                 msg.date = UNKNOWN_DATE.into();
             }
-            msg.agent = Some(
-                format!(
-                    "Claude Desktop {}",
-                    value["product"].as_str().unwrap_or("chat")
-                )
-                .into(),
-            );
+            msg.agent = Some(agent.clone());
             // Reuse the transcript parser's advisor identities and accounting:
             // advisor iterations add tokens, but never another turn or duration.
             let advisor_usage = serde_json::from_value::<crate::sessions::claudecode::ClaudeUsage>(

@@ -567,15 +567,16 @@ fn assign_cursor_event_dedup_keys(
     messages: &mut [UnifiedMessage],
     snapshot_ids: &[Option<String>],
 ) {
-    let mut identified_by_fallback: HashMap<(String, String, i64), String> = HashMap::new();
+    let mut identified_by_fallback: HashMap<(super::SharedStr, super::SharedStr, i64), String> =
+        HashMap::new();
     for (message, snapshot_id) in messages.iter().zip(snapshot_ids) {
         let Some(snapshot_id) = snapshot_id.as_ref() else {
             continue;
         };
         identified_by_fallback
             .entry((
-                message.session_id.to_string(),
-                message.model_id.to_string(),
+                message.session_id.clone(),
+                message.model_id.clone(),
                 message.timestamp,
             ))
             .and_modify(|current| {
@@ -588,8 +589,8 @@ fn assign_cursor_event_dedup_keys(
 
     for (message, snapshot_id) in messages.iter_mut().zip(snapshot_ids) {
         let fallback_key = (
-            message.session_id.to_string(),
-            message.model_id.to_string(),
+            message.session_id.clone(),
+            message.model_id.clone(),
             message.timestamp,
         );
         let event_id = snapshot_id
