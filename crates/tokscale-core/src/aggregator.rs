@@ -105,7 +105,7 @@ fn aggregate_by_date_parallel(
         .fold(
             || HashMap::with_capacity(estimated_days),
             |mut acc: HashMap<String, DayAccumulator>, (message, source)| {
-                acc.entry(message.date.clone())
+                acc.entry(message.date.to_string())
                     .or_default()
                     .add_message_with_estimate_source(&message, source);
                 acc
@@ -155,7 +155,7 @@ impl DailyFoldV2 {
             return;
         }
         self.days
-            .entry(message.date.clone())
+            .entry(message.date.to_string())
             .or_default()
             .add_message_with_estimate_source(message, estimate_source);
     }
@@ -195,7 +195,7 @@ pub fn aggregate_by_session_v2(messages: Vec<UnifiedMessage>) -> Vec<SessionCont
         .fold(
             HashMap::new,
             |mut acc: HashMap<String, SessionAccumulator>, msg| {
-                let entry = acc.entry(msg.session_id.clone()).or_default();
+                let entry = acc.entry(msg.session_id.to_string()).or_default();
                 entry.add_message(&msg);
                 acc
             },
@@ -568,9 +568,9 @@ impl DayAccumulator {
             .clients
             .entry(key)
             .or_insert_with(|| ClientContributionV2 {
-                client: msg.client.clone(),
+                client: msg.client.to_string(),
                 model_id: crate::canonical_model_id(&msg.model_id),
-                provider_id: msg.provider_id.clone(),
+                provider_id: msg.provider_id.to_string(),
                 tokens: TokenBreakdown::default(),
                 cost: 0.0,
                 messages: 0,
@@ -755,9 +755,9 @@ impl SessionAccumulator {
             .clients
             .entry(key)
             .or_insert_with(|| ClientContributionV2 {
-                client: msg.client.clone(),
+                client: msg.client.to_string(),
                 model_id: normalized_model.clone(),
-                provider_id: msg.provider_id.clone(),
+                provider_id: msg.provider_id.to_string(),
                 tokens: TokenBreakdown::default(),
                 cost: 0.0,
                 messages: 0,
@@ -962,14 +962,14 @@ mod tests {
         let timestamp = datetime.timestamp_millis();
 
         UnifiedMessage {
-            client: client.to_string(),
-            model_id: model.to_string(),
-            provider_id: "test-provider".to_string(),
-            session_id: "test-session".to_string(),
+            client: client.to_string().into(),
+            model_id: model.to_string().into(),
+            provider_id: "test-provider".to_string().into(),
+            session_id: "test-session".to_string().into(),
             workspace_key: None,
             workspace_label: None,
             timestamp,
-            date: date.to_string(),
+            date: date.to_string().into(),
             tokens: TokenBreakdown {
                 input: tokens / 2,
                 output: tokens / 2,
@@ -1645,14 +1645,14 @@ mod tests {
         cost: f64,
     ) -> UnifiedMessage {
         UnifiedMessage {
-            client: client.to_string(),
-            model_id: model.to_string(),
-            provider_id: provider.to_string(),
-            session_id: session_id.to_string(),
+            client: client.to_string().into(),
+            model_id: model.to_string().into(),
+            provider_id: provider.to_string().into(),
+            session_id: session_id.to_string().into(),
             workspace_key: None,
             workspace_label: None,
             timestamp: timestamp_ms,
-            date: date.to_string(),
+            date: date.to_string().into(),
             tokens,
             cost,
             cost_source: Default::default(),

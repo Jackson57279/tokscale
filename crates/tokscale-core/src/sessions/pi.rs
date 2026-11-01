@@ -1108,8 +1108,13 @@ fn parse_pi_format_file_inner(
                 });
             }
         }
-        unified.session_title = header_title.clone().or_else(|| rolling_title.clone());
-        unified.parent_session_id = parent_session_id.clone();
+        unified.session_title = header_title
+            .clone()
+            .or_else(|| rolling_title.clone())
+            .map(crate::sessions::SharedStr::from);
+        unified.parent_session_id = parent_session_id
+            .clone()
+            .map(crate::sessions::SharedStr::from);
         unified.set_workspace(workspace_key.clone(), workspace_label.clone());
         observer.observe_entry(&entry, Some(&unified));
         messages.push(unified);
@@ -1126,7 +1131,7 @@ fn parse_pi_format_file_inner(
     // from the latest message, so stamp the final title there.
     if header_title.is_none() {
         if let (Some(title), Some(last)) = (rolling_title, messages.last_mut()) {
-            last.session_title = Some(title);
+            last.session_title = Some(title.into());
         }
     }
 
@@ -1630,8 +1635,14 @@ mod tests {
         assert_eq!(messages[0].tokens.output, 50);
         assert_eq!(messages[0].tokens.cache_read, 10);
         assert_eq!(messages[0].tokens.cache_write, 5);
-        assert_eq!(messages[0].workspace_key, Some("/tmp".to_string()));
-        assert_eq!(messages[0].workspace_label, Some("tmp".to_string()));
+        assert_eq!(
+            messages[0].workspace_key,
+            Some(crate::sessions::SharedStr::from("/tmp"))
+        );
+        assert_eq!(
+            messages[0].workspace_label,
+            Some(crate::sessions::SharedStr::from("tmp"))
+        );
     }
 
     #[test]

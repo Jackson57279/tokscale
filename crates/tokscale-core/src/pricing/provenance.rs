@@ -21,14 +21,14 @@ struct AppliedEstimate {
 impl From<&UnifiedMessage> for AppliedEstimate {
     fn from(message: &UnifiedMessage) -> Self {
         Self {
-            client: message.client.clone(),
-            model: message.model_id.clone(),
-            provider: message.provider_id.clone(),
+            client: message.client.to_string(),
+            model: message.model_id.to_string(),
+            provider: message.provider_id.to_string(),
             billing_provider: message.billing_identity.id().map(str::to_owned),
-            pricing_model: message.pricing_model_id.clone(),
-            session: message.session_id.clone(),
+            pricing_model: message.pricing_model_id.as_ref().map(ToString::to_string),
+            session: message.session_id.to_string(),
             timestamp: message.timestamp,
-            service_tier: message.service_tier.clone(),
+            service_tier: message.service_tier.as_ref().map(ToString::to_string),
             tokens: [
                 message.tokens.input,
                 message.tokens.output,

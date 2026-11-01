@@ -574,8 +574,8 @@ fn assign_cursor_event_dedup_keys(
         };
         identified_by_fallback
             .entry((
-                message.session_id.clone(),
-                message.model_id.clone(),
+                message.session_id.to_string(),
+                message.model_id.to_string(),
                 message.timestamp,
             ))
             .and_modify(|current| {
@@ -588,8 +588,8 @@ fn assign_cursor_event_dedup_keys(
 
     for (message, snapshot_id) in messages.iter_mut().zip(snapshot_ids) {
         let fallback_key = (
-            message.session_id.clone(),
-            message.model_id.clone(),
+            message.session_id.to_string(),
+            message.model_id.to_string(),
             message.timestamp,
         );
         let event_id = snapshot_id

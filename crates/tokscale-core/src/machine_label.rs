@@ -178,7 +178,7 @@ impl MachineLabeler {
     pub(crate) fn label_messages(&self, path: &Path, messages: &mut [UnifiedMessage]) {
         if let Some(label) = self.configured_label_for(path) {
             for message in messages {
-                message.machine_label = Some(label.to_string());
+                message.machine_label = Some(label.to_string().into());
             }
         }
     }

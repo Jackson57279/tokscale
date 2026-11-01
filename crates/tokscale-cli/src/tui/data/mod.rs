@@ -378,7 +378,7 @@ fn accumulate_session_entry(
     {
         entry.models.push(SessionModel {
             display_name: normalized_model.to_string(),
-            provider: msg.provider_id.clone(),
+            provider: msg.provider_id.to_string(),
             color_key: model_key.to_string(),
         });
     }
@@ -972,8 +972,8 @@ impl DataLoader {
             let model_entry = model_map.entry(key.clone()).or_insert_with(|| ModelUsage {
                 model: normalized_model.clone(),
                 color_key: model_key.clone(),
-                provider: msg.provider_id.clone(),
-                client: msg.client.clone(),
+                provider: msg.provider_id.to_string(),
+                client: msg.client.to_string(),
                 workspace_key: if *group_by == GroupBy::WorkspaceModel {
                     workspace_key.clone()
                 } else {
@@ -1139,7 +1139,7 @@ impl DataLoader {
                     agent_clients
                         .entry(normalized_agent)
                         .or_default()
-                        .insert(msg.client.clone());
+                        .insert(msg.client.to_string());
                 }
             }
 
@@ -1226,7 +1226,7 @@ impl DataLoader {
                     .models
                     .entry(daily_model_key)
                     .or_insert_with(|| DailyModelInfo {
-                        provider: msg.provider_id.clone(),
+                        provider: msg.provider_id.to_string(),
                         display_name: daily_source_model_display_name(
                             group_by,
                             &workspace_label,
@@ -1323,7 +1323,7 @@ impl DataLoader {
                     .models
                     .entry(hourly_model_key)
                     .or_insert_with(|| HourlyModelInfo {
-                        provider: msg.provider_id.clone(),
+                        provider: msg.provider_id.to_string(),
                         display_name: hourly_model_display_name(
                             group_by,
                             &msg.provider_id,
@@ -1418,7 +1418,7 @@ impl DataLoader {
                         .models
                         .entry(m_model_key)
                         .or_insert_with(|| HourlyModelInfo {
-                            provider: msg.provider_id.clone(),
+                            provider: msg.provider_id.to_string(),
                             display_name: hourly_model_display_name(
                                 group_by,
                                 &msg.provider_id,
@@ -1492,7 +1492,7 @@ impl DataLoader {
                     && rolled_child_sessions
                         .entry(rolled_key.clone())
                         .or_default()
-                        .insert(msg.session_id.clone())
+                        .insert(msg.session_id.to_string())
                 {
                     // First sight of this link: remember the edge so the
                     // chain fold below can resolve it to the root.
@@ -1569,7 +1569,7 @@ impl DataLoader {
                 }
 
                 if !project_entry.clients.iter().any(|c| c == &msg.client) {
-                    project_entry.clients.push(msg.client.clone());
+                    project_entry.clients.push(msg.client.to_string());
                 }
 
                 if !project_entry
@@ -1579,7 +1579,7 @@ impl DataLoader {
                 {
                     project_entry.models.push(SessionModel {
                         display_name: normalized_model.clone(),
-                        provider: msg.provider_id.clone(),
+                        provider: msg.provider_id.to_string(),
                         color_key: model_key.clone(),
                     });
                 }
@@ -2130,21 +2130,21 @@ mod tests {
     fn accumulate_session_entry_normalizes_and_deduplicates_agents() {
         let mut entry = SessionUsage::new("opencode", "sess-test");
         let mut msg = UnifiedMessage {
-            client: "opencode".to_string(),
-            model_id: "test-model".to_string(),
-            provider_id: "test-provider".to_string(),
-            session_id: "sess-test".to_string(),
-            workspace_key: Some("/path/to/project".to_string()),
-            workspace_label: Some("project".to_string()),
+            client: "opencode".to_string().into(),
+            model_id: "test-model".to_string().into(),
+            provider_id: "test-provider".to_string().into(),
+            session_id: "sess-test".to_string().into(),
+            workspace_key: Some("/path/to/project".to_string().into()),
+            workspace_label: Some("project".to_string().into()),
             timestamp: 1_700_000_000,
-            date: "2023-11-14".to_string(),
+            date: "2023-11-14".to_string().into(),
             tokens: tokscale_core::TokenBreakdown::default(),
             cost: 0.0,
             cost_source: tokscale_core::sessions::CostSource::default(),
             service_tier: None,
             duration_ms: None,
             message_count: 1,
-            agent: Some("hephaestus".to_string()),
+            agent: Some("hephaestus".to_string().into()),
             dedup_key: None,
             session_title: None,
             parent_session_id: None,
@@ -2161,7 +2161,7 @@ mod tests {
         assert_eq!(entry.agents, vec!["Hephaestus".to_string()]);
 
         // Duplicate with variant formatting doesn't add duplicate
-        msg.agent = Some(" Hephaestus ".to_string());
+        msg.agent = Some(" Hephaestus ".to_string().into());
         accumulate_session_entry(&mut entry, &msg, 0.0, "test-model", "test-model", true);
         assert_eq!(entry.agents, vec!["Hephaestus".to_string()]);
     }
@@ -2936,7 +2936,7 @@ mod tests {
                 None,
                 None,
             );
-            msg.machine_label = Some(machine.to_string());
+            msg.machine_label = Some(machine.to_string().into());
             msg
         };
         let loader = DataLoader::new(None);
@@ -2983,7 +2983,7 @@ mod tests {
             None,
             None,
         );
-        steven.machine_label = Some("steven".to_string());
+        steven.machine_label = Some("steven".to_string().into());
         vec![local, steven]
     }
 
@@ -3051,7 +3051,7 @@ mod tests {
                 None,
                 None,
             );
-            msg.date = date.to_string();
+            msg.date = date.to_string().into();
             msg.duration_ms = duration_ms;
             msg
         };
@@ -4472,8 +4472,8 @@ after"#,
                 },
                 cost,
             );
-            msg.session_title = title.map(str::to_string);
-            msg.parent_session_id = parent.map(str::to_string);
+            msg.session_title = title.map(tokscale_core::SharedStr::from);
+            msg.parent_session_id = parent.map(tokscale_core::SharedStr::from);
             msg
         };
 
@@ -4573,7 +4573,7 @@ after"#,
                 },
                 0.1,
             );
-            msg.session_title = title.map(str::to_string);
+            msg.session_title = title.map(tokscale_core::SharedStr::from);
             msg
         };
 
@@ -4619,7 +4619,7 @@ after"#,
                 },
                 input as f64 / 100.0,
             );
-            msg.parent_session_id = parent.map(str::to_string);
+            msg.parent_session_id = parent.map(tokscale_core::SharedStr::from);
             msg
         };
 
@@ -4849,7 +4849,7 @@ after"#,
         native.agent = Some("build".into());
         let mut floor = make_msg(0, 400, 200, 4.0);
         let floor_key = "local-recovery:daily:claude:2025-01-15".to_string();
-        floor.session_id = floor_key.clone();
+        floor.session_id = floor_key.clone().into();
         floor.dedup_key = Some(floor_key);
         floor.date = native.date.clone();
         floor.agent = Some("Recovered daily aggregate (component split estimated)".into());
@@ -4930,7 +4930,7 @@ mod subagent_rollup_tests {
             },
             n as f64 * 0.25,
         );
-        m.parent_session_id = parent.map(str::to_owned);
+        m.parent_session_id = parent.map(tokscale_core::SharedStr::from);
         m.is_turn_start = true;
         m
     }

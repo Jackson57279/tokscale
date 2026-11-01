@@ -231,7 +231,7 @@ impl AttributionIndex {
         if message.timestamp <= 0 {
             return Vec::new();
         }
-        let Some(rows) = self.by_selector.get(&message.model_id) else {
+        let Some(rows) = self.by_selector.get(message.model_id.as_str()) else {
             return Vec::new();
         };
         // The ledger row is stamped at its request start, which sits within
@@ -513,7 +513,7 @@ fn count_claims(
     for (message, matches) in messages.iter().zip(candidates) {
         for candidate in matches {
             *claims
-                .entry((message.model_id.clone(), candidate.row_index))
+                .entry((message.model_id.to_string(), candidate.row_index))
                 .or_default() += 1;
         }
     }
@@ -533,7 +533,7 @@ fn unique_claim(
     let [candidate] = matches else {
         return None;
     };
-    if claims.get(&(message.model_id.clone(), candidate.row_index)) != Some(&1) {
+    if claims.get(&(message.model_id.to_string(), candidate.row_index)) != Some(&1) {
         return None;
     }
     Some(CandidateMatch {
@@ -620,7 +620,7 @@ pub(crate) fn attribute_codex_messages(
         let tier_changed = target
             .service_tier
             .as_ref()
-            .is_some_and(|tier| message.service_tier.as_ref() != Some(tier));
+            .is_some_and(|tier| message.service_tier.as_deref() != Some(tier.as_str()));
         if message.provider_id == target.provider
             && message.model_id == target.model
             && !tier_changed
@@ -628,10 +628,10 @@ pub(crate) fn attribute_codex_messages(
             continue;
         }
 
-        message.provider_id = target.provider;
-        message.model_id = target.model;
+        message.provider_id = target.provider.into();
+        message.model_id = target.model.into();
         if let Some(service_tier) = target.service_tier {
-            message.service_tier = Some(service_tier);
+            message.service_tier = Some(service_tier.into());
         }
         // Estimates for the virtual selector cannot price the physical model.
         message.cost = 0.0;
