@@ -385,15 +385,15 @@ impl ModelPerformance {
 pub struct ParsedMessage {
     pub estimate_status: sessions::EstimateStatus,
     pub billing_identity: sessions::BillingIdentity,
-    pub pricing_model_id: Option<String>,
-    pub client: String,
-    pub model_id: String,
-    pub provider_id: String,
-    pub session_id: String,
-    pub workspace_key: Option<String>,
-    pub workspace_label: Option<String>,
+    pub pricing_model_id: Option<SharedStr>,
+    pub client: SharedStr,
+    pub model_id: SharedStr,
+    pub provider_id: SharedStr,
+    pub session_id: SharedStr,
+    pub workspace_key: Option<SharedStr>,
+    pub workspace_label: Option<SharedStr>,
     pub timestamp: i64,
-    pub date: String,
+    pub date: SharedStr,
     pub input: i64,
     pub output: i64,
     pub cache_read: i64,
@@ -404,7 +404,7 @@ pub struct ParsedMessage {
     pub reasoning: i64,
     pub duration_ms: Option<i64>,
     pub message_count: i32,
-    pub agent: Option<String>,
+    pub agent: Option<SharedStr>,
     /// Cost in USD as the parser reported it. This lane applies no pricing, so
     /// the figure is only meaningful when `cost_source` is
     /// [`CostSource::ProviderReported`]; consumers price every other row from
@@ -412,7 +412,7 @@ pub struct ParsedMessage {
     /// authoritative cost.
     pub cost: f64,
     pub cost_source: CostSource,
-    pub service_tier: Option<String>,
+    pub service_tier: Option<SharedStr>,
 }
 
 pub struct ParsedMessages {
@@ -8510,12 +8510,23 @@ pub fn parse_local_clients(options: LocalParseOptions) -> Result<ParsedMessages,
 
     if include_synthetic {
         for msg in &mut messages {
+            if !sessions::synthetic::is_synthetic_gateway(&msg.model_id, &msg.provider_id) {
+                continue;
+            }
             let raw_model = msg.model_id.clone();
+            let mut model_id = msg.model_id.to_string();
+            let mut provider_id = msg.provider_id.to_string();
             sessions::synthetic::normalize_synthetic_gateway_fields(
-                &mut msg.model_id,
-                &mut msg.provider_id,
+                &mut model_id,
+                &mut provider_id,
             );
-            if raw_model != msg.model_id && msg.pricing_model_id.is_none() {
+            if model_id != raw_model.as_str() {
+                msg.model_id = SharedStr::from(model_id);
+            }
+            if provider_id != msg.provider_id.as_str() {
+                msg.provider_id = SharedStr::from(provider_id);
+            }
+            if msg.model_id != raw_model && msg.pricing_model_id.is_none() {
                 msg.pricing_model_id = Some(raw_model);
             }
         }
@@ -8559,7 +8570,7 @@ fn rebucket_parsed_days(
         }
         let key = timezone.day_key(message.timestamp);
         if !key.is_empty() {
-            message.date = key;
+            message.date = SharedStr::from(key);
         }
     }
 }
@@ -8631,15 +8642,15 @@ fn unified_to_parsed(msg: &UnifiedMessage) -> ParsedMessage {
     ParsedMessage {
         estimate_status: msg.estimate_status,
         billing_identity: msg.billing_identity.clone(),
-        pricing_model_id: msg.pricing_model_id.as_ref().map(ToString::to_string),
-        client: msg.client.to_string(),
-        model_id: msg.model_id.to_string(),
-        provider_id: msg.provider_id.to_string(),
-        session_id: msg.session_id.to_string(),
-        workspace_key: msg.workspace_key.as_ref().map(ToString::to_string),
-        workspace_label: msg.workspace_label.as_ref().map(ToString::to_string),
+        pricing_model_id: msg.pricing_model_id.clone(),
+        client: msg.client.clone(),
+        model_id: msg.model_id.clone(),
+        provider_id: msg.provider_id.clone(),
+        session_id: msg.session_id.clone(),
+        workspace_key: msg.workspace_key.clone(),
+        workspace_label: msg.workspace_label.clone(),
         timestamp: msg.timestamp,
-        date: msg.date.to_string(),
+        date: msg.date.clone(),
         input: msg.tokens.input,
         output: msg.tokens.output,
         cache_read: msg.tokens.cache_read,
@@ -8648,10 +8659,10 @@ fn unified_to_parsed(msg: &UnifiedMessage) -> ParsedMessage {
         reasoning: msg.tokens.reasoning,
         duration_ms: msg.duration_ms,
         message_count: msg.message_count,
-        agent: msg.agent.as_ref().map(ToString::to_string),
+        agent: msg.agent.clone(),
         cost: msg.cost,
         cost_source: msg.cost_source,
-        service_tier: msg.service_tier.as_ref().map(ToString::to_string),
+        service_tier: msg.service_tier.clone(),
     }
 }
 
@@ -8760,14 +8771,14 @@ fn filter_parsed_messages(
 
 pub fn parsed_to_unified(msg: &ParsedMessage, cost: f64) -> UnifiedMessage {
     UnifiedMessage {
-        client: msg.client.clone().into(),
-        model_id: msg.model_id.clone().into(),
-        provider_id: msg.provider_id.clone().into(),
-        session_id: msg.session_id.clone().into(),
-        workspace_key: msg.workspace_key.clone().map(SharedStr::from),
-        workspace_label: msg.workspace_label.clone().map(SharedStr::from),
+        client: msg.client.clone(),
+        model_id: msg.model_id.clone(),
+        provider_id: msg.provider_id.clone(),
+        session_id: msg.session_id.clone(),
+        workspace_key: msg.workspace_key.clone(),
+        workspace_label: msg.workspace_label.clone(),
         timestamp: msg.timestamp,
-        date: msg.date.clone().into(),
+        date: msg.date.clone(),
         tokens: TokenBreakdown {
             input: msg.input,
             output: msg.output,
@@ -8778,17 +8789,17 @@ pub fn parsed_to_unified(msg: &ParsedMessage, cost: f64) -> UnifiedMessage {
         },
         cost,
         cost_source: msg.cost_source,
-        service_tier: msg.service_tier.clone().map(SharedStr::from),
+        service_tier: msg.service_tier.clone(),
         duration_ms: msg.duration_ms,
         message_count: msg.message_count,
-        agent: msg.agent.clone().map(SharedStr::from),
+        agent: msg.agent.clone(),
         dedup_key: None,
         session_title: None,
         parent_session_id: None,
         is_turn_start: false,
         model_attribution_conflicted: false,
         billing_identity: msg.billing_identity.clone(),
-        pricing_model_id: msg.pricing_model_id.clone().map(SharedStr::from),
+        pricing_model_id: msg.pricing_model_id.clone(),
         estimate_status: msg.estimate_status,
         copilot_context: None,
         machine_label: None,
@@ -12526,6 +12537,17 @@ mod tests {
         );
         assert_eq!(round_tripped.cost, 2.5);
         assert_eq!(round_tripped.duration_ms, Some(2500));
+        assert!(parsed.client.shares_allocation_with(&unified.client));
+        assert!(parsed
+            .workspace_key
+            .as_ref()
+            .unwrap()
+            .shares_allocation_with(unified.workspace_key.as_ref().unwrap()));
+        assert!(round_tripped
+            .workspace_label
+            .as_ref()
+            .unwrap()
+            .shares_allocation_with(unified.workspace_label.as_ref().unwrap()));
     }
 
     #[test]
@@ -17034,7 +17056,7 @@ mod tests {
         let mut uncached: Vec<(String, i64, i64)> = parsed
             .messages
             .iter()
-            .map(|m| (m.session_id.clone(), m.input, m.output))
+            .map(|m| (m.session_id.to_string(), m.input, m.output))
             .collect();
         uncached.sort();
         assert_eq!(
@@ -24428,7 +24450,11 @@ mod tests {
         assert_eq!(parsed.counts.get(ClientId::Amp), 2);
         assert_eq!(parsed.messages.len(), 2);
 
-        let dates: HashSet<String> = parsed.messages.iter().map(|msg| msg.date.clone()).collect();
+        let dates: HashSet<String> = parsed
+            .messages
+            .iter()
+            .map(|msg| msg.date.to_string())
+            .collect();
         let local_date = |timestamp_ms: i64| {
             chrono::Local
                 .timestamp_millis_opt(timestamp_ms)
